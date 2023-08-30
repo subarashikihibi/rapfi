@@ -83,6 +83,7 @@ MovePicker::MovePicker(Rule rule, const Board &board, ExtraArgs<MovePicker::ROOT
     : board(board)
     , mainHistory(nullptr)
     , counterMoveHistory(nullptr)
+    , continuationHistory(nullptr)
     , stage(ALLMOVES)
     , rule(rule)
     , ttMove(Pos::NONE)
@@ -125,6 +126,7 @@ MovePicker::MovePicker(Rule rule, const Board &board, ExtraArgs<MovePicker::MAIN
     : board(board)
     , mainHistory(args.mainHistory)
     , counterMoveHistory(args.counterMoveHistory)
+    , continuationHistory(args.continuationHistory)
     , rule(rule)
     , allowPlainB4InVCF(false)
     , hasPolicy(false)
@@ -166,6 +168,7 @@ template <>
 MovePicker::MovePicker(Rule rule, const Board &board, ExtraArgs<MovePicker::QVCF> args)
     : board(board)
     , mainHistory(nullptr)
+    , continuationHistory(nullptr)
     , rule(rule)
     , allowPlainB4InVCF(
           args.depth >= DEPTH_QVCF_FULL
@@ -276,6 +279,17 @@ void MovePicker::scoreMoves()
                     m.score += CounterMoveBonus;
             }
         }
+
+        if constexpr (bool(Type & CONT_HISTORY)) {
+            assert(continuationHistory);
+
+            // m.score += (*continuationHistory[0])[m.pos] / 1024     //
+            //            + (*continuationHistory[1])[m.pos] / 2048   //
+            //            + (*continuationHistory[3])[m.pos] / 2048   //
+            //            + (*continuationHistory[5])[m.pos] / 2048;  //
+
+            // m.score += (*continuationHistory[0])[m.pos] / 2048;
+        }
     }
 }
 
@@ -298,7 +312,7 @@ top:
         curMove = moves;
         endMove = generate<ALL>(board, curMove);
 
-        scoreMoves<ScoreType(BALANCED | POLICY | MAIN_HISTORY | COUNTER_MOVE)>();
+        scoreMoves<ScoreType(BALANCED | POLICY | MAIN_HISTORY | COUNTER_MOVE | CONT_HISTORY)>();
         fastPartialSort(curMove, endMove, 0);
 
         stage = ALLMOVES;

@@ -38,7 +38,7 @@ public:
     /// generation phase to set and provide information for move ordering.
     template <SearchType ST>
     MovePicker(Rule rule, const Board &board, ExtraArgs<ST> args);
-    MovePicker(const MovePicker &) = delete;
+    MovePicker(const MovePicker &)            = delete;
     MovePicker &operator=(const MovePicker &) = delete;
 
     [[nodiscard]] Pos operator()();
@@ -58,6 +58,7 @@ private:
         POLICY       = 0b100,
         MAIN_HISTORY = 0b1000,
         COUNTER_MOVE = 0b10000,
+        CONT_HISTORY = 0b100000,
     };
 
     template <PickType T, typename Pred>
@@ -70,6 +71,7 @@ private:
     const Board              &board;
     const MainHistory        *mainHistory;
     const CounterMoveHistory *counterMoveHistory;
+    const MoveHistory       **continuationHistory;
     int8_t                    stage;
     Rule                      rule;
     Pos                       ttMove;
@@ -87,9 +89,10 @@ struct MovePicker::ExtraArgs<MovePicker::ROOT>
 template <>
 struct MovePicker::ExtraArgs<MovePicker::MAIN>
 {
-    Pos                 ttMove;
-    MainHistory        *mainHistory;
-    CounterMoveHistory *counterMoveHistory;
+    Pos                       ttMove;
+    const MainHistory        *mainHistory;
+    const CounterMoveHistory *counterMoveHistory;
+    const MoveHistory       **continuationHistory;
 };
 
 template <>

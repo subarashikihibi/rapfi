@@ -950,6 +950,7 @@ moves_loop:
                       ttMove,
                       &searchData->mainHistory,
                       &searchData->counterMoveHistory,
+                      contHist,
                   });
 
     // Step 11. Loop through all legal moves until no moves remain

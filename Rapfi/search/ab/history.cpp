@@ -49,6 +49,7 @@ void HistoryTracker::updateBestmoveStats(Depth depth, Pos bestMove, Value bestVa
 
     if (selfP4 >= H_FLEX3) {
         searchData->mainHistory[self][bestMove][HIST_ATTACK] << bonus;
+        updateContinuationStats(oppo5, oppo4, bestMove, bonus);
     }
     else if (!oppo4 && selfP4 < H_FLEX3) {
         updateQuietStats(bestMove, bonus);
@@ -61,8 +62,10 @@ void HistoryTracker::updateBestmoveStats(Depth depth, Pos bestMove, Value bestVa
     }
 
     // Decrease stats for all the other played non-best attack moves
-    for (int i = 0; i < attackCount; i++)
+    for (int i = 0; i < attackCount; i++) {
         searchData->mainHistory[self][attacksSearched[i]][HIST_ATTACK] << -bonus;
+        updateContinuationStats(oppo5, oppo4, attacksSearched[i], -bonus);
+    }
 
     // Update counter move history if last move is valid (not a pass)
     // Only update if last opponent move is not a four (otherwise we only have one possible reply)
