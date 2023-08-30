@@ -14,7 +14,7 @@
  *
  *  You should have received a copy of the GNU General Public License
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
+ */
 
 #include "movepick.h"
 
@@ -270,7 +270,7 @@ void MovePicker::scoreMoves()
             if (Pos lastMove = board.getLastMove(); board.isInBoard(lastMove)) {
                 const int CounterMoveBonus = 21;
                 auto [counterMove, counterMoveP4] =
-                    (*counterMoveHistory)[oppo][lastMove.moveIndex()].get();
+                    *((*counterMoveHistory)[oppo][lastMove.moveIndex()]);
 
                 if (counterMove == m.pos && counterMoveP4 <= c.pattern4[self])
                     m.score += CounterMoveBonus;

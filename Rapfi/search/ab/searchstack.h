@@ -20,6 +20,7 @@
 
 #include "../../core/pos.h"
 #include "../../core/types.h"
+#include "../history.h"
 
 #include <cassert>
 #include <vector>
@@ -31,18 +32,19 @@ namespace Search::AB {
 /// objects, indexed by the current ply.
 struct SearchStack
 {
-    Pos *const pv;
-    const int  ply;
-    int        moveCount;
-    Depth      extraExtension;  /// cumulative extension depth that larger than one ply
-    int        dbValueDepth;
-    int        statScore;
-    Value      staticEval;
-    Pos        currentMove;
-    Pos        skipMove;
-    Pos        killers[2];
-    Pattern4   moveP4[SIDE_NB];
-    bool       ttPv;
+    Pos *const   pv;
+    MoveHistory *continuationHistory;
+    const int    ply;
+    int          moveCount;
+    Depth        extraExtension;  /// cumulative extension depth that larger than one ply
+    int          dbValueDepth;
+    int          statScore;
+    Value        staticEval;
+    Pos          currentMove;
+    Pos          skipMove;
+    Pos          killers[2];
+    Pattern4     moveP4[SIDE_NB];
+    bool         ttPv;
 
     /// Append current move and to the end of child PV.
     void updatePv(Pos move)
@@ -74,10 +76,11 @@ struct SearchStack
 class StackArray : std::vector<SearchStack>
 {
 public:
-    static constexpr int plyBeforeRoot = 4;
+    static constexpr int plyBeforeRoot = 6;
     static constexpr int plyAfterMax   = 2;
 
-    StackArray(int maxPly, Value initStaticEval) : triPvTable((maxPly + 1) * (maxPly + 2) / 2)
+    StackArray(int maxPly, Value initStaticEval, MoveHistory *initMoveHistory)
+        : triPvTable((maxPly + 1) * (maxPly + 2) / 2)
     {
         auto nextTriPvIndex = [&, idx = 0](int ply) mutable -> Pos * {
             Pos *curPv = nullptr;
@@ -91,7 +94,7 @@ public:
 
         reserve(maxPly + plyBeforeRoot + plyAfterMax);
         for (int i = -plyBeforeRoot; i < maxPly + plyAfterMax; i++)
-            push_back(SearchStack {nextTriPvIndex(i), i});
+            push_back(SearchStack {nextTriPvIndex(i), initMoveHistory, i});
         // Initialize static evaluation for plies before root
         for (int i = 0; i <= plyBeforeRoot; i++)
             (*this)[i].staticEval = initStaticEval;

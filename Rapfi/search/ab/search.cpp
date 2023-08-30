@@ -77,6 +77,11 @@ void ABSearchData::clearData()
     singularRoot    = false;
     mainHistory.init(0);
     counterMoveHistory.init(std::make_pair(Pos::NONE, NONE));
+
+    for (bool isOppo4 : {false, true})
+        for (bool isAttack : {false, true})
+            for (int pos0 = 0; pos0 < FULL_BOARD_CELL_COUNT; pos0++)
+                continuationHistory[isOppo4][isAttack][pos0]->init(0);
 }
 
 /// Clear main thread states (and TT) between different games.
@@ -238,15 +243,15 @@ void ABSearcher::searchMain(MainSearchThread &th)
 /// until the stop condition is reached. Results are updated to thread bounded with the board.
 void ABSearcher::search(SearchThread &th)
 {
-    ABSearchData     &sd        = *th.searchDataAs<ABSearchData>();
-    SearchOptions    &options   = th.options();
-    Value             initValue = Evaluation::evaluate(*th.board, options.rule);
-    StackArray        stackArray(MAX_PLY, initValue);
-    Value             bestValue           = -VALUE_INFINITE;
-    Pos               lastBestMove        = Pos::NONE;
-    int               lastMoveChangeDepth = 0;
-    float             timeReduction = 1.0f, totalBestMoveChanges = 0.0f;
-    int               firstMateDepth = 0, firstSingularDepth = 0;
+    ABSearchData  &sd        = *th.searchDataAs<ABSearchData>();
+    SearchOptions &options   = th.options();
+    Value          initValue = Evaluation::evaluate(*th.board, options.rule);
+    StackArray     stackArray(MAX_PLY, initValue, &sd.continuationHistory[false][false][Pos::NONE]);
+    Value          bestValue           = -VALUE_INFINITE;
+    Pos            lastBestMove        = Pos::NONE;
+    int            lastMoveChangeDepth = 0;
+    float          timeReduction = 1.0f, totalBestMoveChanges = 0.0f;
+    int            firstMateDepth = 0, firstSingularDepth = 0;
     MainSearchThread *mainThread = (&th == th.threads.main() ? th.threads.main() : nullptr);
 
     // Init search depth range
@@ -857,8 +862,9 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
     if (!PvNode && !oppo4 && !skipMove && eval >= beta
         && board.getLastMove() != Pos::PASS  // No consecutive pass moves
         && ss->staticEval >= beta + nullMoveMargin<Rule>(depth)) {
-        Depth r         = nullMoveReduction<Rule>(depth);
-        ss->currentMove = Pos::PASS;
+        Depth r                 = nullMoveReduction<Rule>(depth);
+        ss->currentMove         = Pos::PASS;
+        ss->continuationHistory = &searchData->continuationHistory[false][false][Pos::NONE];
 
         board.doPassMove();
         TT.prefetch(board.zobristKey());
@@ -929,6 +935,14 @@ moves_loop:
     // at depth equal or greater to current depth and result of this search was far below alpha
     bool likelyFailLow = PvNode && ttHit && (ttBound & BOUND_UPPER) && ttDepth >= depth
                          && ttValue < alpha + failLowMargin<Rule>(depth);
+
+    // Setup continuation history tables across different ply
+    const MoveHistory *contHist[] = {(ss - 1)->continuationHistory,
+                                     (ss - 2)->continuationHistory,
+                                     nullptr,
+                                     (ss - 4)->continuationHistory,
+                                     nullptr,
+                                     (ss - 6)->continuationHistory};
 
     MovePicker mp(Rule,
                   board,
@@ -1095,6 +1109,8 @@ moves_loop:
         Depth newDepth     = depth - 1.0f + extension;
         ss->currentMove    = move;
         ss->extraExtension = (ss - 1)->extraExtension + std::max(extension - 1.0f, 0.0f);
+        ss->continuationHistory =
+            &searchData->continuationHistory[bool(oppo4)][ss->moveP4[self] >= H_FLEX3][move];
 
         // Step 14. Make the move
         board.move<Rule>(move);
@@ -1155,8 +1171,13 @@ moves_loop:
             }
 
             // Update statScore of this node
-            ss->statScore = searchData->mainHistory[self][move][HIST_ATTACK]
-                            + searchData->mainHistory[self][move][HIST_QUIET] * 4 / 5 - 3200;
+            ss->statScore = searchData->mainHistory[self][move][HIST_ATTACK]           //
+                            + searchData->mainHistory[self][move][HIST_QUIET] * 4 / 5  //
+                            + (*contHist[0])[move]                                     //
+                            + (*contHist[1])[move]                                     //
+                            + (*contHist[3])[move]                                     //
+                            // + (*contHist[5])[move] / 8                                 //
+                            - 5000;
 
             // Decrease/increase reduction for moves with a good/bad history
             // Use less stat score at higher depths
@@ -1473,7 +1494,8 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
     thisThread->numNodes.fetch_add(1, std::memory_order_relaxed);
 
     Color    self = board.sideToMove(), oppo = ~self;
-    uint16_t oppo5     = board.p4Count(oppo, A_FIVE);  // opponent five
+    uint16_t oppo5     = board.p4Count(oppo, A_FIVE);           // opponent five
+    uint16_t oppo4     = oppo5 + board.p4Count(oppo, B_FLEX4);  // opponent straight four and five
     int      moveCount = 0;
     Value    bestValue = -VALUE_INFINITE, value;
     Value    oldAlpha  = alpha;  // Flag BOUND_EXACT when value above alpha in PVNode
@@ -1600,10 +1622,11 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
     while (Pos move = mp()) {
         assert(board.isEmpty(move));
 
-        ss->currentMove   = move;
-        ss->moveCount     = ++moveCount;
-        ss->moveP4[BLACK] = board.cell(move).pattern4[BLACK];
-        ss->moveP4[WHITE] = board.cell(move).pattern4[WHITE];
+        ss->currentMove         = move;
+        ss->moveCount           = ++moveCount;
+        ss->moveP4[BLACK]       = board.cell(move).pattern4[BLACK];
+        ss->moveP4[WHITE]       = board.cell(move).pattern4[WHITE];
+        ss->continuationHistory = &searchData->continuationHistory[bool(oppo4)][true][move];
         if (PvNode)
             (ss + 1)->pv[0] = Pos::NONE;
 
@@ -1667,10 +1690,12 @@ Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
 
     // Step 1. Initialize node
     SearchThread *thisThread = board.thisThread();
+    ABSearchData *searchData = thisThread->searchDataAs<ABSearchData>();
     thisThread->numNodes.fetch_add(1, std::memory_order_relaxed);
 
     Color    self = board.sideToMove(), oppo = ~self;
     uint16_t oppo5 = board.p4Count(oppo, A_FIVE);  // opponent five
+    uint16_t oppo4 = board.p4Count(oppo, A_FIVE);  // opponent five
     Value    value;
 
     // Update selDepth (selDepth counts from 1, ply from 0)
@@ -1699,10 +1724,11 @@ Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
         value = mated_in(ss->ply + 2);
     }
     else {
-        ss->currentMove   = move;
-        ss->moveCount     = 1;
-        ss->moveP4[BLACK] = board.cell(move).pattern4[BLACK];
-        ss->moveP4[WHITE] = board.cell(move).pattern4[WHITE];
+        ss->currentMove         = move;
+        ss->moveCount           = 1;
+        ss->moveP4[BLACK]       = board.cell(move).pattern4[BLACK];
+        ss->moveP4[WHITE]       = board.cell(move).pattern4[WHITE];
+        ss->continuationHistory = &searchData->continuationHistory[bool(oppo4)][false][move];
         if (PvNode)
             (ss + 1)->pv[0] = Pos::NONE;
 

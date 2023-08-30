@@ -44,6 +44,9 @@ struct ABSearchData : SearchData
     MainHistory        mainHistory;         /// Heuristic history table
     CounterMoveHistory counterMoveHistory;  /// Counter move history table
 
+    /// Continuation history table, indexed by [isOppo4][isAttack]
+    ContinuationHistory continuationHistory[2][2];
+
     ~ABSearchData() = default;
     void clearData() override;
 };

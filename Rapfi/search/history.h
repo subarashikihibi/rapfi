@@ -41,11 +41,13 @@ struct HistTable
     /// and overloads operator<<() function to ensure that values does not go out of bound.
     struct Entry
     {
-        void    operator=(const ValueT &v) { value = v; }
-        ValueT *operator&() { return &value; }
-                operator const ValueT &() const { return value; }
-        ValueT  get() const { return value; }
-        void    operator<<(int bonus)
+        void          operator=(const ValueT &v) { value = v; }
+        ValueT       *operator&() { return &value; }
+        ValueT       *operator->() { return &value; }
+        ValueT       &operator*() { return value; }
+        const ValueT &operator*() const { return value; }
+        operator const ValueT &() const { return value; }
+        void operator<<(int bonus)
         {
             static_assert(Range <= std::numeric_limits<ValueT>::max());
             assert(std::abs(bonus) <= Range);  // Ensure bonus is in [-Range, Range]
@@ -80,5 +82,11 @@ typedef HistTable<int16_t, 10692, SIDE_NB, FULL_BOARD_CELL_COUNT, MAIN_HIST_TYPE
 /// CounterMoveHistory records a natural response of moves irrespective of the actual position.
 /// It is indexed by color of the previous move, previous move's position and current move's type.
 typedef HistTable<std::pair<Pos, Pattern4>, 0, SIDE_NB, MAX_MOVES> CounterMoveHistory;
+
+/// MoveHistory records how good is a move by its position and move type.
+typedef HistTable<int16_t, 29952, FULL_BOARD_CELL_COUNT> MoveHistory;
+
+/// ContinuationHistory is indexed by a pair of continous moves.
+typedef HistTable<MoveHistory, 0, FULL_BOARD_CELL_COUNT> ContinuationHistory;
 
 }  // namespace Search

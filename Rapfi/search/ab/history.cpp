@@ -14,7 +14,7 @@
  *
  *  You should have received a copy of the GNU General Public License
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
+ */
 
 #include "history.h"
 
@@ -54,8 +54,10 @@ void HistoryTracker::updateBestmoveStats(Depth depth, Pos bestMove, Value bestVa
         updateQuietStats(bestMove, bonus);
 
         // Decrease stats for all the other played non-best quiet moves
-        for (int i = 0; i < quietCount; i++)
+        for (int i = 0; i < quietCount; i++) {
             searchData->mainHistory[self][quietsSearched[i]][HIST_QUIET] << -bonus;
+            updateContinuationStats(oppo5, oppo4, quietsSearched[i], -bonus);
+        }
     }
 
     // Decrease stats for all the other played non-best attack moves
@@ -85,18 +87,35 @@ void HistoryTracker::updateTTMoveStats(Depth depth, Pos ttMove, Value ttValue, V
             if (ttValue >= beta)
                 updateQuietStats(ttMove, bonus);
             // Penalty for a quiet ttMove that fails low
-            else
+            else {
                 searchData->mainHistory[self][ttMove][HIST_QUIET] << -bonus;
+                updateContinuationStats(oppo5, oppo4, ttMove, -bonus);
+            }
         }
     }
 }
 
 void HistoryTracker::updateQuietStats(Pos move, int bonus)
 {
-    Color self = board.sideToMove();
+    Color self = board.sideToMove(), oppo = ~self;
+    bool  oppo5 = board.p4Count(oppo, A_FIVE);
+    bool  oppo4 = oppo5 || board.p4Count(oppo, B_FLEX4);
 
     searchData->mainHistory[self][move][HIST_QUIET] << bonus;
+    updateContinuationStats(oppo5, oppo4, move, bonus);
     searchStack->setKiller(move);  // Update killer heruistic move
+}
+
+void HistoryTracker::updateContinuationStats(bool oppo5, bool oppo4, Pos move, int bonus)
+{
+    for (int i : {1, 2, 4, 6}) {
+        if (oppo5 && i > 1)
+            break;
+        if (oppo4 && i > 2)
+            break;
+        if ((searchStack - i)->currentMove != Pos::NONE)
+            (*(searchStack - i)->continuationHistory)[move] << bonus;
+    }
 }
 
 }  // namespace Search::AB

@@ -65,6 +65,9 @@ private:
     int           attackCount = 0, quietCount = 0;
     Pos           attacksSearched[MAX_ATTACKS];
     Pos           quietsSearched[MAX_QUIETS];
+
+    void
+    updateContinuationStats(bool oppo5, bool oppo4, Pos move, int bonus);
 };
 
 }  // namespace Search::AB
