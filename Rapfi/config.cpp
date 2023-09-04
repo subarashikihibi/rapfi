@@ -32,7 +32,6 @@
 #include "game/pattern.h"
 #include "search/hashtable.h"
 #include "search/searchthread.h"
-#include "tuning/tunemap.h"
 
 #include <cpptoml.h>
 #include <fstream>
@@ -984,32 +983,3 @@ std::unique_ptr<::Database::DBStorage> Config::createDefaultDBStorage(std::strin
 {
     return DatabaseMaker ? DatabaseMaker(url.empty() ? DatabaseURL : url) : nullptr;
 }
-
-int scoreBlack[2][N] = {{-2, 0, 0, 2, 4, 12, 12, 12, 18, 32, 40, 60, 200, 1000},
-                        {-1, 0, 0, 1, 2, 6, 6, 6, 9, 16, 20, 30, 100, 500}};
-int scoreWhite[2][N] = {{-2, 0, 0, 2, 4, 12, 12, 12, 18, 32, 40, 60, 200, 1000},
-                        {-1, 0, 0, 1, 2, 6, 6, 6, 9, 16, 20, 30, 100, 500}};
-
-template <int idx, int (&Score)[2][N]>
-void update()
-{
-    for (int a = 0; a < N; a++)
-        for (int b = a; b < N; b++)
-            for (int c = b; c < N; c++)
-                for (int d = c; d < N; d++) {
-                    int pcode = PatternConfig::PCODE[a][b][c][d];
-                    Config::P4SCORES[idx][pcode][0] =
-                        Score[0][a] + Score[0][b] + Score[0][c] + Score[0][d];
-                    Config::P4SCORES[idx][pcode][1] =
-                        Score[1][a] + Score[1][b] + Score[1][c] + Score[1][d];
-                }
-}
-
-TUNE(
-    scoreBlack,
-    [](int v) { return std::make_pair(std::min(v - 20, 0), std::max(v + 20, v * 2)); },
-    update<RENJU + BLACK, scoreBlack>);
-TUNE(
-    scoreWhite,
-    [](int v) { return std::make_pair(std::min(v - 20, 0), std::max(v + 20, v * 2)); },
-    update<RENJU + BLACK, scoreWhite>);
