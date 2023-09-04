@@ -32,6 +32,7 @@
 #include "game/pattern.h"
 #include "search/hashtable.h"
 #include "search/searchthread.h"
+#include "tuning/tunemap.h"
 
 #include <cpptoml.h>
 #include <fstream>
@@ -116,31 +117,55 @@ int MaxSearchDepth = 99;
 
 /// Time reserved for delay in communication between engine and GUI.
 int TurnTimeReserved = 30;
-/// Number of moves spared for the rest of game
+TUNE(TurnTimeReserved);
+
+/// Number of moves spared for the rest of the game
 float MatchSpace = 22.0f;
-/// Minimum number of moves spared for the rest of game
+TUNE(MatchSpace);
+
+/// Minimum number of moves spared for the rest of the game
 float MatchSpaceMin = 7.0f;
-/// Average branch factor to whether next depth has enough time
+TUNE(MatchSpaceMin);
+
+/// Average branch factor to determine whether the next depth has enough time
 float AverageBranchFactor = 1.7f;
+TUNE(AverageBranchFactor);
+
 /// Exit search if turn time is used more than this ratio (even given ample match time)
 float AdvancedStopRatio = 0.9f;
+TUNE(AdvancedStopRatio);
+
 /// Plan time management at most this many moves ahead
 int MoveHorizon = 64;
+TUNE(MoveHorizon);
+
 /// Bias of time divisor factor to depth
 float TimeDivisorBias = 1.25f;
+TUNE(TimeDivisorBias);
+
 /// Scale of time divisor factor to depth
 float TimeDivisorScale = 0.02f;
-/// Pow to depth in time divisor factor
+TUNE(TimeDivisorScale);
+
+/// Pow to depth in the time divisor factor
 float TimeDivisorDepthPow = 1.4f;
+TUNE(TimeDivisorDepthPow);
+
 /// Scale of score to falling factor
 float FallingFactorScale = 0.0032f;
+TUNE(FallingFactorScale);
+
 /// Offset of score to falling factor
 float FallingFactorBias = 0.544f;
+TUNE(FallingFactorBias);
+
 /// Scale of best move stable ply to reduction factor
 float BestmoveStableReductionScale = 0.0125f;
-/// Power of previous time reduction factor to get current factor
-float BestmoveStablePrevReductionPow = 0.528f;
+TUNE(BestmoveStableReductionScale);
 
+/// Power of previous time reduction factor to get the current factor
+float BestmoveStablePrevReductionPow = 0.528f;
+TUNE(BestmoveStablePrevReductionPow);
 // -------------------------------------------------
 // Database options
 
