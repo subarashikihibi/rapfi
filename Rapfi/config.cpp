@@ -419,6 +419,31 @@ void Config::readSearch(const cpptoml::table &t)
     NumIterationAfterSingularRoot =
         t.get_as<int>("num_iteration_after_singular_root").value_or(NumIterationAfterSingularRoot);
     MaxSearchDepth = t.get_as<int>("max_search_depth").value_or(MaxSearchDepth);
+
+    // Read time management options
+    if (auto tm = t.get_table("timectl")) {
+        TurnTimeReserved = tm->get_as<int>("turn_time_reserved").value_or(TurnTimeReserved);
+        MatchSpace       = tm->get_as<double>("match_space").value_or(MatchSpace);
+        MatchSpaceMin    = tm->get_as<double>("match_space_min").value_or(MatchSpaceMin);
+        AverageBranchFactor =
+            tm->get_as<double>("average_branch_factor").value_or(AverageBranchFactor);
+        AdvancedStopRatio = tm->get_as<double>("advanced_stop_ratio").value_or(AdvancedStopRatio);
+        MoveHorizon       = tm->get_as<int>("move_horizon").value_or(MoveHorizon);
+
+        TimeDivisorScale = tm->get_as<double>("time_divisor_scale").value_or(TimeDivisorScale);
+        TimeDivisorBias  = tm->get_as<double>("time_divisor_bias").value_or(TimeDivisorBias);
+        TimeDivisorDepthPow =
+            tm->get_as<double>("time_divisor_depth_pow").value_or(TimeDivisorDepthPow);
+
+        FallingFactorScale =
+            tm->get_as<double>("falling_factor_scale").value_or(FallingFactorScale);
+        FallingFactorBias = tm->get_as<double>("falling_factor_bias").value_or(FallingFactorBias);
+
+        BestmoveStableReductionScale = tm->get_as<double>("bestmove_stable_reduction_scale")
+                                           .value_or(BestmoveStableReductionScale);
+        BestmoveStablePrevReductionPow = tm->get_as<double>("bestmove_stable_prev_reduction_pow")
+                                             .value_or(BestmoveStablePrevReductionPow);
+    }
 }
 
 /// Read model table of all rules in the config.
