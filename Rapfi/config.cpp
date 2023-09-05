@@ -32,6 +32,7 @@
 #include "game/pattern.h"
 #include "search/hashtable.h"
 #include "search/searchthread.h"
+#include "tuning/tunemap.h"
 
 #include <cpptoml.h>
 #include <fstream>
@@ -77,7 +78,7 @@ double EvaluatorDrawRatio;
 Eval          EVALS[RULE_NB + 1][PCODE_NB];
 Eval          EVALS_THREAT[RULE_NB + 1][THREAT_NB];
 Pattern4Score P4SCORES[RULE_NB + 1][PCODE_NB];
-
+TUNE(EVALS[RENJU]);
 // -------------------------------------------------
 // General options
 
