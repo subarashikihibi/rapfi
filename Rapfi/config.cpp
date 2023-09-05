@@ -78,7 +78,7 @@ double EvaluatorDrawRatio;
 Eval          EVALS[RULE_NB + 1][PCODE_NB];
 Eval          EVALS_THREAT[RULE_NB + 1][THREAT_NB];
 Pattern4Score P4SCORES[RULE_NB + 1][PCODE_NB];
-TUNE(EVALS[RENJU]);
+TUNE(EVALS_THREAT[RENJU]);
 // -------------------------------------------------
 // General options
 
