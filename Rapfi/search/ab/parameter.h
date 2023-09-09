@@ -184,8 +184,7 @@ lmrExtension(Depth newDepth, Depth searchedDepth, Value value, Value alpha, Valu
     bool doEvenDeeperSearch =
         value > (alpha + LMRExt2Bias[R] + Value(32 * (newDepth - searchedDepth)));
     bool doShallowerSearch = value < bestValue + Value(newDepth);
-    bool doEvenShallowerSearch = value > alpha && value < alpha + 30;
-    return doDeeperSearch + doEvenDeeperSearch - doShallowerSearch - doEvenShallowerSearch;
+    return doDeeperSearch + doEvenDeeperSearch - doShallowerSearch;
 }
 
 /// Init Reductions table according to num threads.
