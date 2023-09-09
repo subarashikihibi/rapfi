@@ -1129,7 +1129,7 @@ moves_loop:
             // Decrease reduction if position is or has been on the PV and
             // the node is not likely to fail low.
             if (ss->ttPv && !likelyFailLow)
-                r -= 1.0f - (depth - ttDepth > 3);
+                r -= 1.0f;
 
             // Increase reduction for nodes that does not improve root alpha
             if (!RootNode && (ss->ply & 1) && bestValue >= -searchData->rootAlpha)
