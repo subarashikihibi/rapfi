@@ -1193,6 +1193,8 @@ moves_loop:
         // (which is too good to be balanced), so we can safely discard this move.
         if (RootNode && options.balanceMode && moveCount > 1 && value > alpha)
             value = -search<Rule, NonPV>(board, ss + 1, -beta, -(beta - 1), newDepth, !cutNode);
+        if (value > beta)
+            newDepth--;
 
         // For PV nodes only, do a full PV search on the first move or after a fail
         // high (in the latter case search only if value < beta), otherwise let the
