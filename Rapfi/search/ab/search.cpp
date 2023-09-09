@@ -629,7 +629,6 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
 {
     constexpr bool PvNode   = NT == PV || NT == Root;
     constexpr bool RootNode = NT == Root;
-    const Depth maxNextDepth = RootNode ? depth : depth + 1.0f;
 
     // Do some sanity check over input arguments
     assert(-VALUE_INFINITE <= alpha && alpha < beta && beta <= VALUE_INFINITE);
@@ -1102,13 +1101,6 @@ moves_loop:
         TT.prefetch(board.zobristKey());
 
         bool doFullDepthSearch;
-        Value delta = beta - alpha;
-        Depth r     = reduction<Rule, PvNode>(searcher->reductions,
-                                              depth,
-                                              moveCount,
-                                              improvement,
-                                              delta,
-                                              searchData->rootDelta);
         // Step 15. Late move reduction (LMR). Moves are searched with a reduced
         // depth and will be re-searched at full depth if fail high.
         if (depth > 2 && moveCount > 1 + 2 * RootNode
@@ -1118,7 +1110,13 @@ moves_loop:
                 || moveCount >= lateMoveCount<Rule>(depth, improvement > 0)  // do LMR for late move
                 || mp.hasPolicyScore()  // do LMR for low policy
                        && mp.curMoveScore() < policyReductionScore<Rule>(depth))) {
-            
+            Value delta = beta - alpha;
+            Depth r     = reduction<Rule, PvNode>(searcher->reductions,
+                                              depth,
+                                              moveCount,
+                                              improvement,
+                                              delta,
+                                              searchData->rootDelta);
 
             // Policy based reduction
             if (mp.hasPolicyScore())
@@ -1206,7 +1204,7 @@ moves_loop:
                         : value > alpha && (RootNode || value < beta)))) {
             (ss + 1)->pv[0]        = Pos::NONE;
             (ss + 1)->dbValueDepth = INT16_MIN;  // Clear database value depth of next move
-            value = -search<Rule, PV>(board, ss + 1, -beta, -alpha, std::min(maxNextDepth, newDepth - (r > 4)), false);
+            value = -search<Rule, PV>(board, ss + 1, -beta, -alpha, newDepth, false);
         }
 
         // Step 17. Undo move
