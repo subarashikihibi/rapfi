@@ -478,7 +478,6 @@ void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue,
     ABSearchData *searchData  = thisThread->searchDataAs<ABSearchData>();
     ABSearcher   *searcher    = static_cast<ABSearcher *>(thisThread->threads.searcher());
     int           failHighCnt = 0;
-    bool updatedAlpha = false;
 
     // Reset aspiration window starting size if aspiration windows is enabled and
     // we are not in balance move mode. (no aspiration window for balance move mode).
@@ -544,11 +543,6 @@ void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue,
             failHighCnt = 0;
         }
         else if (value >= beta) {
-            if (!updatedAlpha && failHighCnt > 4)
-                  {
-                      alpha = (alpha + beta) / 2;
-                      updatedAlpha = true;
-                  }
             beta = std::min(value + delta, VALUE_INFINITE);
             failHighCnt++;
         }
