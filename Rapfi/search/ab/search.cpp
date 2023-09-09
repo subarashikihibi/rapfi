@@ -1027,7 +1027,7 @@ moves_loop:
 
         // Singular extension: only one move fails high while other moves fails low on a search of
         // (alpha-s, beta-s), then this move is singular and should be extended.
-        else if (!RootNode && depth >= SE_DEPTH + (improvement > 0) && move == ttMove
+        else if (!RootNode && depth >= SE_DEPTH && move == ttMove
                  && !skipMove                                  // No recursive singular search
                  && std::abs(ttValue) < VALUE_MATE_IN_MAX_PLY  // ttmove value is not a mate
                  && (ttBound & BOUND_LOWER)                    // ttMove failed high last time
@@ -1101,13 +1101,6 @@ moves_loop:
         TT.prefetch(board.zobristKey());
 
         bool doFullDepthSearch;
-        Value delta = beta - alpha;
-        Depth r     = reduction<Rule, PvNode>(searcher->reductions,
-                                              depth,
-                                              moveCount,
-                                              improvement,
-                                              delta,
-                                              searchData->rootDelta);
         // Step 15. Late move reduction (LMR). Moves are searched with a reduced
         // depth and will be re-searched at full depth if fail high.
         if (depth > 2 && moveCount > 1 + 2 * RootNode
@@ -1117,6 +1110,13 @@ moves_loop:
                 || moveCount >= lateMoveCount<Rule>(depth, improvement > 0)  // do LMR for late move
                 || mp.hasPolicyScore()  // do LMR for low policy
                        && mp.curMoveScore() < policyReductionScore<Rule>(depth))) {
+            Value delta = beta - alpha;
+            Depth r     = reduction<Rule, PvNode>(searcher->reductions,
+                                              depth,
+                                              moveCount,
+                                              improvement,
+                                              delta,
+                                              searchData->rootDelta);
 
             // Policy based reduction
             if (mp.hasPolicyScore())
@@ -1204,7 +1204,7 @@ moves_loop:
                         : value > alpha && (RootNode || value < beta)))) {
             (ss + 1)->pv[0]        = Pos::NONE;
             (ss + 1)->dbValueDepth = INT16_MIN;  // Clear database value depth of next move
-            value = -search<Rule, PV>(board, ss + 1, -beta, -alpha, newDepth - (r > 5), false);
+            value = -search<Rule, PV>(board, ss + 1, -beta, -alpha, newDepth, false);
         }
 
         // Step 17. Undo move
