@@ -28,11 +28,7 @@ jobs:
           cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_BMI2=OFF -DUSE_AVX2=ON -DUSE_AVX=ON -DUSE_SSE=ON -DNO_COMMAND_MODULES=ON
           cmake --build . -j2 && strip pbrain-rapfi*
           mv -v pbrain-rapfi rapfi-linux-avx2
-
-      - name: Pre-upload to fishtest
-        if: ${{ !contains(github.event.head_commit.message, 'Revert') }}
-        run: curl http://test.stockfishxq.com/api/pre_upload -F file=@build/rapfi-linux-avx2 -F file_type=engine -F "password=${{secrets.NOTHING}}"
-
+          
       - name: Print variables table
         if: ${{ !contains(github.event.head_commit.message, 'Revert') }}
         run: printf 'end' | build/rapfi-linux-avx2
