@@ -134,7 +134,7 @@ Value evaluate(const Board &board, Value alpha, Value beta)
             Value vadd = (basicEval * v_1 + threatEval * v_2 )* ((ply < 150) ? 15 - ply / 10 : 0) / 15 / 1000;
             eval = v.value() + vadd;
             Value optimism = board.thisThread()->optimism[self];
-            optimism = optimism * (opt1 + basicEval + threatEval) / opt2;
+            optimism = optimism * (opt1 + threatEval) / opt2;
             eval = (eval * opt3 + optimism * opt4) / 1024;
             
             // Guarantee evaluation does not hit the mate range
