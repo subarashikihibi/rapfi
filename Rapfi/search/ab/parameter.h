@@ -19,7 +19,7 @@
 #pragma once
 
 #include "../../core/types.h"
-
+#include "searchstack.h"
 #include <array>
 #include <cmath>
 
@@ -175,7 +175,7 @@ constexpr int lateMoveCount(Depth d, bool improving)
 /// Extension for full-depth search when reduced LMR search fails high
 template <Rule R>
 constexpr int
-lmrExtension(Depth newDepth, Depth searchedDepth, Value value, Value alpha, Value bestValue)
+lmrExtension(Depth newDepth, Depth searchedDepth, Value value, Value alpha, Value bestValue, SearchStack *ss,bool PvNode)
 {
     constexpr int LMRExt1Bias[RULE_NB] = {37, 31, 37};
     constexpr int LMRExt2Bias[RULE_NB] = {349, 344, 258};
@@ -183,7 +183,7 @@ lmrExtension(Depth newDepth, Depth searchedDepth, Value value, Value alpha, Valu
     bool doDeeperSearch = value > (alpha + LMRExt1Bias[R] + Value(12 * (newDepth - searchedDepth)));
     bool doEvenDeeperSearch =
         value > (alpha + LMRExt2Bias[R] + Value(32 * (newDepth - searchedDepth)));
-    bool doShallowerSearch = value < bestValue + Value(newDepth);
+    bool doShallowerSearch = value < bestValue + Value((2 - (ss->ttPv && !PvNode)) * newDepth);
     return doDeeperSearch + doEvenDeeperSearch - doShallowerSearch;
 }
 

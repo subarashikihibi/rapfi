@@ -721,7 +721,7 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
     if (!PvNode && ttHit && ttDepth >= depth
         && (ttValue >= beta ? (ttBound & BOUND_LOWER) : (ttBound & BOUND_UPPER))) {
         // Update move heruistics for ttMove
-        histTracker.updateTTMoveStats(depth, ttMove, ttValue, beta);
+        histTracker.updateTTMoveStats(depth + (ss->staticEval > beta), ttMove, ttValue, beta);
         return ttValue;
     }
 
@@ -1027,7 +1027,7 @@ moves_loop:
 
         // Singular extension: only one move fails high while other moves fails low on a search of
         // (alpha-s, beta-s), then this move is singular and should be extended.
-        else if (!RootNode && depth >= SE_DEPTH && move == ttMove
+        else if (!RootNode && depth >= SE_DEPTH + 2 * (improvement > 0) && move == ttMove
                  && !skipMove                                  // No recursive singular search
                  && std::abs(ttValue) < VALUE_MATE_IN_MAX_PLY  // ttmove value is not a mate
                  && (ttBound & BOUND_LOWER)                    // ttMove failed high last time
@@ -1171,7 +1171,7 @@ moves_loop:
             value = -search<Rule, NonPV>(board, ss + 1, -(alpha + 1), -alpha, d, true);
 
             if (value > alpha && d < newDepth) {
-                Depth ext = lmrExtension<Rule>(newDepth, d, value, alpha, bestValue);
+                Depth ext = lmrExtension<Rule>(newDepth, d, value, alpha, bestValue, ss, PvNode);
                 // Do not allow more extension if extra extension is already high
                 if (ss->extraExtension >= LMR_EXTRA_MAX_DEPTH)
                     ext = std::min(ext, 1.0f);
