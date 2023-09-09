@@ -1027,7 +1027,7 @@ moves_loop:
 
         // Singular extension: only one move fails high while other moves fails low on a search of
         // (alpha-s, beta-s), then this move is singular and should be extended.
-        else if (!RootNode && depth >= SE_DEPTH + 3 * (improvement > 0) && move == ttMove
+        else if (!RootNode && depth >= SE_DEPTH && move == ttMove
                  && !skipMove                                  // No recursive singular search
                  && std::abs(ttValue) < VALUE_MATE_IN_MAX_PLY  // ttmove value is not a mate
                  && (ttBound & BOUND_LOWER)                    // ttMove failed high last time
