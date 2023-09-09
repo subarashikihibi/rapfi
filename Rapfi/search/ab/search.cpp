@@ -1068,6 +1068,8 @@ moves_loop:
             // Reduce if we are likely to fail high.
             else if (ttValue >= beta)
                 extension = -1.67f;
+            else if (value > ttValue + 25)
+                extension = -0.84f;
         }
 
         // Extension for ttmove without singular extension
