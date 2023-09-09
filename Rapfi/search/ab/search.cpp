@@ -40,6 +40,8 @@
 #include <iomanip>
 #include <random>
 
+int opt5 = 98;
+int opt6 = 132;
 TUNE(opt5);
 TUNE(opt6);
 using namespace Search;
