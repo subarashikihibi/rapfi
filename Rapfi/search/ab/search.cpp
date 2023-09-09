@@ -32,6 +32,7 @@
 #include "parameter.h"
 #include "searcher.h"
 #include "searchstack.h"
+#include "../../tuning/tunemap.h"
 
 #include <algorithm>
 #include <cassert>
@@ -39,6 +40,8 @@
 #include <iomanip>
 #include <random>
 
+TUNE(opt5);
+TUNE(opt6);
 using namespace Search;
 using namespace Search::AB;
 
@@ -486,6 +489,12 @@ void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue,
         delta = nextAspirationWindowDelta(prevValue);
         alpha = std::max(prevValue - delta, -VALUE_INFINITE);
         beta  = std::min(prevValue + delta, VALUE_INFINITE);
+
+        // Adjust optimism based on root move's previousScore
+        Value opt =  prevValue * opt5 / (std::abs(prevValue) + opt6);
+        Color self = board.sideToMove();
+        thisThread->optimism[ self] = opt;
+        thisThread->optimism[~self] = -thisThread->optimism[self];
     }
     else {
         alpha = delta = -VALUE_INFINITE;

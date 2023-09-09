@@ -21,10 +21,22 @@
 #include "../game/board.h"
 #include "../search/searchthread.h"
 #include "evaluator.h"
-
+#include "../tuning/tunemap.h"
 #include <algorithm>
 #include <cmath>
 
+int v_1 = 100;
+int v_2 = 33;
+int opt1 = 0;
+int opt2 = 100;
+int opt3 = 1024;
+int opt4 = 0;
+TUNE(v_1, 0, 300);
+TUNE(v_2, 0, 300);
+TUNE(opt1, 0, 1000);
+TUNE(opt2, 0, 200);
+TUNE(opt3, 800, 1024);
+TUNE(opt4, 0, 300);
 namespace {
 
 /// Makes threat mask according current pattern4 counts on board.
@@ -118,8 +130,16 @@ Value evaluate(const Board &board, Value alpha, Value beta)
                 drawWinRate       = self == BLACK ? drawWinRate : 1.0f - drawWinRate;
                 v                 = v.valueOfDrawWinRate(drawWinRate, newDrawRate);
             }
-
-            return v.value();
+            int ply = board.ply();
+            Value vadd = (basicEval * v_1 + threatEval * v_2 )* ((ply < 150) ? 15 - ply / 10 : 0) / 15 / 1000;
+            eval = v.value() + vadd;
+            Value optimism = board.thisThread()->optimism[self];
+            optimism = optimism * (opt1 + basicEval + threatEval) / opt2;
+            eval = (eval * opt3 + optimism * opt4) / 1024;
+            
+            // Guarantee evaluation does not hit the mate range
+            eval = std::clamp(eval, VALUE_EVAL_MIN, VALUE_EVAL_MAX);
+            return eval;
         }
     }
 
