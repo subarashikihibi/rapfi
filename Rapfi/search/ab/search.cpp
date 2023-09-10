@@ -1002,7 +1002,7 @@ moves_loop:
         // Do pruning only when we have non-losing moves, otherwise we may have a false mate.
         if (!RootNode && bestValue > VALUE_MATED_IN_MAX_PLY) {
             // Move count pruning: skip move if movecount is above threshold (~155 elo)
-            if (moveCount >= futilityMoveCount(depth, improvement > 5))
+            if (moveCount >= futilityMoveCount(depth, improvement > 0))
                 continue;
 
             // Skip trivial moves at lower depth (~10 elo)
