@@ -721,7 +721,7 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
     if (!PvNode && ttHit && ttDepth >= depth
         && (ttValue >= beta ? (ttBound & BOUND_LOWER) : (ttBound & BOUND_UPPER))) {
         // Update move heruistics for ttMove
-        histTracker.updateTTMoveStats(depth + (ss->staticEval > beta), ttMove, ttValue, beta);
+        histTracker.updateTTMoveStats(depth, ttMove, ttValue, beta);
         return ttValue;
     }
 
