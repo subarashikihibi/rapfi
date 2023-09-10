@@ -183,7 +183,7 @@ lmrExtension(Depth newDepth, Depth searchedDepth, Value value, Value alpha, Valu
     bool doDeeperSearch = value > (alpha + LMRExt1Bias[R] + Value(12 * (newDepth - searchedDepth)));
     bool doEvenDeeperSearch =
         value > (alpha + LMRExt2Bias[R] + Value(32 * (newDepth - searchedDepth)));
-    bool doShallowerSearch = value < bestValue + Value(newDepth);
+    bool doShallowerSearch = value < bestValue + 3 * Value(newDepth);
     return doDeeperSearch + doEvenDeeperSearch - doShallowerSearch;
 }
 
