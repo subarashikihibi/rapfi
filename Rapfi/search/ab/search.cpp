@@ -1243,9 +1243,6 @@ moves_loop:
             // RootMove is kept unchanged for better eval output.
             if (options.balanceMode)
                 value = balancedValue(value, options.balanceBias);
-            
-            if (value > alpha)
-                value = Value(value ^ (thisThread->numNodes.load(std::memory_order_relaxed) & 0x1));
 
             // Check for PV move or new best move.
             rm.numNodes += thisThread->numNodes.load(std::memory_order_relaxed) - curNumNodes;
