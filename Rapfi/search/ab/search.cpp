@@ -882,7 +882,7 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
     }
 
     // Step 10. Internal iterative deepening (reduction)
-    if (!RootNode && PvNode && !ttMove && ss->ply > 2)
+    if (!RootNode && PvNode && !ttMove)
         depth -= IIR_REDUCTION_PV;
 
     // Reduce for pv ttMove that has not been chosen for a few iterations
