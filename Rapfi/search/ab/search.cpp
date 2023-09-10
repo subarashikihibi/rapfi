@@ -646,6 +646,7 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
     Color    self = board.sideToMove(), oppo = ~self;
     uint16_t oppo5 = board.p4Count(oppo, A_FIVE);           // opponent five
     uint16_t oppo4 = oppo5 + board.p4Count(oppo, B_FLEX4);  // opponent straight four and five
+    bool moreReduce;
 
     // Return eval directly or dive into vcf search when the depth reaches zero
     if (depth <= 0.0f) {
@@ -1283,6 +1284,7 @@ moves_loop:
                 ss->dbValueDepth = (ss + 1)->dbValueDepth + 1;
 
             if (value > alpha) {
+                moreReduce = value > bestValue + Value(newDepth);
                 bestMove = move;  // Only update best move in pv or fail high node
 
                 if (PvNode && !RootNode)  // Update pv even in fail-high case
@@ -1296,7 +1298,7 @@ moves_loop:
 
                     // Reduce other moves if we have found at least one score improvement
                     if (depth > 2 && depth < 12 && beta < 2000 && value > -2000)
-                        depth -= 1;
+                        depth -= 1+ (depth > 2 && moreReduce);
 
                     // If we are in balance move mode, we also shrink beta as to narrow
                     // the search window to [-abs(v-bias)+bias, abs(v-bias)+bias].
