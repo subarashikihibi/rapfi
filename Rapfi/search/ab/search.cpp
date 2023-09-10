@@ -1046,7 +1046,7 @@ moves_loop:
                                         singularBeta - 1,
                                         singularBeta,
                                         depth - singularReduction(depth, formerPv),
-                                        cutNode && !ss->ttPv);
+                                        cutNode);
             ss->skipMove = Pos::NONE;
 
             // Restore current P4
