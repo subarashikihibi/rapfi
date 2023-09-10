@@ -1171,7 +1171,7 @@ moves_loop:
             value = -search<Rule, NonPV>(board, ss + 1, -(alpha + 1), -alpha, d, true);
 
             if (value > alpha && d < newDepth) {
-                Depth ext = lmrExtension<Rule>(newDepth, d, value, alpha, bestValue, ss, PvNode);
+                Depth ext = lmrExtension<Rule>(newDepth, d, value, alpha, bestValue);
                 // Do not allow more extension if extra extension is already high
                 if (ss->extraExtension >= LMR_EXTRA_MAX_DEPTH)
                     ext = std::min(ext, 1.0f);
