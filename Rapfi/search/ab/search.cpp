@@ -47,7 +47,7 @@ namespace {
 enum NodeType { Root, PV, NonPV };
 
 void iterativeDeepingLoop(Board &board);
-void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue, Depth depth);
+void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue, Depth depth, int *stabilityCount);
 template <NodeType NT = PV>
 Value search(Rule         rule,
              Board       &board,
@@ -263,6 +263,7 @@ void ABSearcher::search(SearchThread &th)
 
     // Limit multiPV to the size of root moves
     sd.multiPv = std::min<uint32_t>(sd.multiPv, th.rootMoves.size());
+    int stabilityCount = 0;
 
     for (sd.rootDepth = startDepth; sd.rootDepth <= maxDepth && !th.threads.isTerminating();
          sd.rootDepth = pickNextDepth(th.threads, th.id, sd.rootDepth)) {
@@ -281,6 +282,8 @@ void ABSearcher::search(SearchThread &th)
         }
         if (mainThread)
             mainThread->previousPlyBestMove = th.rootMoves[0].pv[0];
+        
+        sd.rootDepth += (stabilityCount > 6);
 
         // MultiPV loop. We perform a full root search for each PV line
         for (sd.pvIdx = 0; sd.pvIdx < sd.multiPv && !th.threads.isTerminating(); ++sd.pvIdx) {
@@ -292,7 +295,7 @@ void ABSearcher::search(SearchThread &th)
                              *th.board,
                              stackArray.rootStack(),
                              th.rootMoves[sd.pvIdx].previousValue,
-                             Depth(sd.rootDepth));
+                             Depth(sd.rootDepth), &stabilityCount);
 
             // Send out various infomation to GUI
             if (mainThread)
@@ -471,7 +474,7 @@ namespace {
 
 /// The aspiration window search loop. First start with a small aspiration window, in the case
 /// of a fail high/low, re-search with a bigger window until we don't fail high/low anymore.
-void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue, Depth depth)
+void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue, Depth depth, int *stabilityCount)
 {
     Value         delta, alpha, beta;
     SearchThread *thisThread  = board.thisThread();
@@ -541,13 +544,18 @@ void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue,
             beta  = Value((double)alpha * alphaPercentage + (double)beta * (1 - alphaPercentage));
             alpha = std::max(value - delta, -VALUE_INFINITE);
             failHighCnt = 0;
+            *stabilityCount = 0;
         }
         else if (value >= beta) {
             beta = std::min(value + delta, VALUE_INFINITE);
             failHighCnt++;
+            *stabilityCount = 0;
         }
         else
+        {
             break;
+            (*stabilityCount)++;
+        }
 
         delta = nextAspirationWindowDelta(value, delta);
         assert(alpha >= -VALUE_INFINITE && beta <= VALUE_INFINITE);
