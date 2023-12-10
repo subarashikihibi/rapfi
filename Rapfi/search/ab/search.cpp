@@ -851,7 +851,7 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
         && beta > VALUE_MATED_IN_MAX_PLY         // Confirm non-losing move exists
         && eval - futilityMargin<Rule>(depth - 1, cutNode && !ttHit, improvement > 0) >= beta
         && !((ss - 2)->moveP4[self] >= E_BLOCK4 && (ss - 4)->moveP4[self] >= E_BLOCK4))
-        return (eval + beta) / 2;
+        return eval;
 
     // Step 9. Null move pruning (~35 elo)
     if (!PvNode && !oppo4 && !skipMove && eval >= beta
