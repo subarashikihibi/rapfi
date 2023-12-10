@@ -66,9 +66,6 @@ namespace Config {
 /// Formula: win rate = sigmoid(eval / ScalingFactor)
 double ScalingFactor;
 double InvScalingFactor;
-double EvaluatorMarginWinLossScale;
-double EvaluatorMarginWinLossExponent;
-double EvaluatorMarginScale;
 double EvaluatorDrawBlackWinRate;
 double EvaluatorDrawRatio;
 
@@ -79,9 +76,9 @@ Eval          EVALS[RULE_NB + 1][PCODE_NB];
 Eval          EVALS_THREAT[RULE_NB + 1][THREAT_NB];
 Pattern4Score P4SCORES[RULE_NB + 1][PCODE_NB];
 
-EvaluatorMarginWinLossScale    = 1.05;
-EvaluatorMarginWinLossExponent = 2.95;
-EvaluatorMarginScale           = 342;
+double EvaluatorMarginWinLossScale    = 1.05;
+double EvaluatorMarginWinLossExponent = 2.95;
+double EvaluatorMarginScale           = 342;
 TUNE(EvaluatorMarginScale);
 TUNE(EvaluatorMarginWinLossScale);
 TUNE(EvaluatorMarginWinLossExponent);
