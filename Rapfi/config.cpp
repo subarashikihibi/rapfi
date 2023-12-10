@@ -32,6 +32,7 @@
 #include "game/pattern.h"
 #include "search/hashtable.h"
 #include "search/searchthread.h"
+#include "tuning/tunemap.h"
 
 #include <cpptoml.h>
 #include <fstream>
@@ -677,6 +678,9 @@ void Config::readEvaluator(const cpptoml::table &t)
     EvaluatorDrawRatio             = t.get_as<double>("draw_ratio").value_or(1.0);
     EvaluatorDrawBlackWinRate      = std::clamp(EvaluatorDrawBlackWinRate, 0.0, 1.0);
     EvaluatorDrawRatio             = std::clamp(EvaluatorDrawRatio, 0.0, 1.0);
+    TUNE(EvaluatorMarginScale);
+    TUNE(EvaluatorMarginWinLossScale);
+    TUNE(EvaluatorMarginWinLossExponent);
 
     MESSAGEL("Evaluator set to " << *evaluatorType << ".");
 }
