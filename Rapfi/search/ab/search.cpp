@@ -32,6 +32,7 @@
 #include "parameter.h"
 #include "searcher.h"
 #include "searchstack.h"
+#include "tuning/tunemap.h"
 
 #include <algorithm>
 #include <cassert>
@@ -41,6 +42,18 @@
 
 using namespace Search;
 using namespace Search::AB;
+
+float a_1 = 14.0f;
+Value a_2 = 57;
+Value a_3 = 124;
+Value a_4 = 71;
+Value a_5 = 118;
+TUNE(a_1);
+TUNE(a_2);
+TUNE(a_3);
+TUNE(a_4);
+TUNE(a_5);
+
 
 namespace {
 
@@ -1016,9 +1029,9 @@ moves_loop:
 
             Depth lmrDepth = newDepth - r;
 
-        if(!oppo4 && lmrDepth < 14.0f
-           && ss->staticEval + (bestValue < ss->staticEval - 57 ? 124 : 71)
-                           + Value(118 * lmrDepth)
+        if(!oppo4 && lmrDepth < a_1
+           && ss->staticEval + (bestValue < ss->staticEval - a_2 ? a_3 : a_4)
+                           + Value(a_5 * lmrDepth)
                          <= alpha)
                 continue;
 
