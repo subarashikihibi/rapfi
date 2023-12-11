@@ -44,10 +44,10 @@ using namespace Search;
 using namespace Search::AB;
 
 float a_1 = 14.0f;
-Value a_2 = 57;
-Value a_3 = 124;
-Value a_4 = 71;
-Value a_5 = 118;
+int a_2 = 57;
+int a_3 = 124;
+int a_4 = 71;
+int a_5 = 118;
 TUNE(a_1);
 TUNE(a_2);
 TUNE(a_3);
