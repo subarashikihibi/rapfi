@@ -32,7 +32,7 @@
 #include "parameter.h"
 #include "searcher.h"
 #include "searchstack.h"
-#include "tuning/tunemap.h"
+#include "../../tuning/tunemap.h"
 
 #include <algorithm>
 #include <cassert>
