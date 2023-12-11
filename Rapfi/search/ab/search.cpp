@@ -75,7 +75,7 @@ void ABSearchData::clearData()
     completedDepth  = 0;
     bestMoveChanges = 0;
     singularRoot    = false;
-    mainHistory.init(5346);
+    mainHistory.init(0);
     counterMoveHistory.init(std::make_pair(Pos::NONE, NONE));
 }
 
