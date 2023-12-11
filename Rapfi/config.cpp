@@ -79,12 +79,6 @@ Eval          EVALS[RULE_NB + 1][PCODE_NB];
 Eval          EVALS_THREAT[RULE_NB + 1][THREAT_NB];
 Pattern4Score P4SCORES[RULE_NB + 1][PCODE_NB];
 
-EvaluatorMarginWinLossScale    = 1.05;
-EvaluatorMarginWinLossExponent = 2.95;
-EvaluatorMarginScale           = 342;
-TUNE(EvaluatorMarginScale);
-TUNE(EvaluatorMarginWinLossScale);
-TUNE(EvaluatorMarginWinLossExponent);
 // -------------------------------------------------
 // General options
 
@@ -677,10 +671,16 @@ void Config::readEvaluator(const cpptoml::table &t)
     }
 
     // Read classical/evaluator switching margin
+    EvaluatorMarginWinLossScale    = t.get_as<double>("margin_winloss_scale").value_or(1.05);
+    EvaluatorMarginWinLossExponent = t.get_as<double>("margin_winloss_exp").value_or(2.95);
+    EvaluatorMarginScale           = t.get_as<double>("margin_scale").value_or(342);
     EvaluatorDrawBlackWinRate      = t.get_as<double>("draw_black_winrate").value_or(0.5);
     EvaluatorDrawRatio             = t.get_as<double>("draw_ratio").value_or(1.0);
     EvaluatorDrawBlackWinRate      = std::clamp(EvaluatorDrawBlackWinRate, 0.0, 1.0);
     EvaluatorDrawRatio             = std::clamp(EvaluatorDrawRatio, 0.0, 1.0);
+    TUNE(EvaluatorMarginScale);
+    TUNE(EvaluatorMarginWinLossScale);
+    TUNE(EvaluatorMarginWinLossExponent);
 
     MESSAGEL("Evaluator set to " << *evaluatorType << ".");
 }
