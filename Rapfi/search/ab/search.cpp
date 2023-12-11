@@ -543,8 +543,11 @@ void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue,
             failHighCnt = 0;
         }
         else if (value >= beta) {
+            if(value >= beta + 250)
+                failHighCnt++;
             beta = std::min(value + delta, VALUE_INFINITE);
             failHighCnt++;
+
         }
         else
             break;
