@@ -1018,7 +1018,7 @@ moves_loop:
 
         if(!oppo4 && lmrDepth < 14.0f
            && ss->staticEval + (bestValue < ss->staticEval - 57 ? 124 : 71)
-                           + 118 * lmrDepth
+                           + Value(118 * lmrDepth)
                          <= alpha)
                 continue;
 
