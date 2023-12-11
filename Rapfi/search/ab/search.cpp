@@ -893,7 +893,7 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
     if (depth <= 0)
         return vcfsearch<Rule, NT>(board, ss, alpha, beta);
 
-    if (cutNode && depth >= IID_DEPTH && !ttMove) {
+    if (depth >= IID_DEPTH && !ttMove) {
         depth -= IIR_REDUCTION;
 
         // We only need best move from the iid search, so we just discard its result
