@@ -19,7 +19,7 @@
 #pragma once
 
 #include "../../core/types.h"
-#include "searchstack.h"
+
 #include <array>
 #include <cmath>
 
