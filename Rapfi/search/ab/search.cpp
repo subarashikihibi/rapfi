@@ -998,28 +998,11 @@ moves_loop:
         int  distSelf = Pos::distance(move, (ss - 2)->currentMove);
         bool distract = distSelf > (Rule == RENJU ? 5 : 4) && distOppo > 4;
 
-        Depth newDepth     = depth - 1.0f;
-        Value delta = beta - alpha;
-        Depth r     = reduction<Rule, PvNode>(searcher->reductions,
-                                              depth,
-                                              moveCount,
-                                              improvement,
-                                              delta,
-                                              searchData->rootDelta);
-
         // Step 12. Pruning at shallow depth
         // Do pruning only when we have non-losing moves, otherwise we may have a false mate.
         if (!RootNode && bestValue > VALUE_MATED_IN_MAX_PLY) {
             // Move count pruning: skip move if movecount is above threshold (~155 elo)
             if (moveCount >= futilityMoveCount(depth, improvement > 0))
-                continue;
-
-            Depth lmrDepth = newDepth - r;
-
-        if(!oppo4 && lmrDepth < 14.0f
-           && ss->staticEval + (bestValue < ss->staticEval - 57 ? 124 : 71)
-                           + Value(118 * lmrDepth)
-                         <= alpha)
                 continue;
 
             // Skip trivial moves at lower depth (~10 elo)
@@ -1109,7 +1092,7 @@ moves_loop:
         }
 
         // Calculate new depth for this move
-        newDepth     = depth - 1.0f + extension;
+        Depth newDepth     = depth - 1.0f + extension;
         ss->currentMove    = move;
         ss->extraExtension = (ss - 1)->extraExtension + std::max(extension - 1.0f, 0.0f);
 
@@ -1127,6 +1110,13 @@ moves_loop:
                 || moveCount >= lateMoveCount<Rule>(depth, improvement > 0)  // do LMR for late move
                 || mp.hasPolicyScore()  // do LMR for low policy
                        && mp.curMoveScore() < policyReductionScore<Rule>(depth))) {
+            Value delta = beta - alpha;
+            Depth r     = reduction<Rule, PvNode>(searcher->reductions,
+                                              depth,
+                                              moveCount,
+                                              improvement,
+                                              delta,
+                                              searchData->rootDelta);
 
             // Policy based reduction
             if (mp.hasPolicyScore())
