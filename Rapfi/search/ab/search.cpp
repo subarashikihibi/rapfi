@@ -1064,10 +1064,10 @@ moves_loop:
             }
             // Multi-cut pruning: we also failed high on a reduced search without ttMove.
             else if (singularBeta >= beta)
-                return beta;
+                return singularBeta;
             // Reduce if we are likely to fail high.
             else if (ttValue >= beta)
-                extension = -1.67f;
+                extension = -1.67f - !PvNode;
         }
 
         // Extension for ttmove without singular extension
