@@ -670,9 +670,9 @@ void Config::readEvaluator(const cpptoml::table &t)
     }
 
     // Read classical/evaluator switching margin
-    EvaluatorMarginWinLossScale    = t.get_as<double>("margin_winloss_scale").value_or(1.05);
-    EvaluatorMarginWinLossExponent = t.get_as<double>("margin_winloss_exp").value_or(2.95);
-    EvaluatorMarginScale           = t.get_as<double>("margin_scale").value_or(342);
+    EvaluatorMarginWinLossScale    = 1.4051865061590916;
+    EvaluatorMarginWinLossExponent = 3.361708001496351;
+    EvaluatorMarginScale           = 414.11095692310977;
     EvaluatorDrawBlackWinRate      = t.get_as<double>("draw_black_winrate").value_or(0.5);
     EvaluatorDrawRatio             = t.get_as<double>("draw_ratio").value_or(1.0);
     EvaluatorDrawBlackWinRate      = std::clamp(EvaluatorDrawBlackWinRate, 0.0, 1.0);
