@@ -2354,14 +2354,10 @@ void searchVCNMain(MainSearchThread &th)
             rm.previousPv = rm.pv;
         }
 
-        Value alpha = -VALUE_INFINITE;
+        // 严格算杀窗口：Alpha 直接抬高到绝杀分界线之下。
+        // 这样任何普通的评估分（如 3256）都会导致 Fail-Low，从而迫使引擎继续寻找真正的绝杀。
+        Value alpha = VALUE_MATE_IN_MAX_PLY - 1;
         Value beta = VALUE_INFINITE;
-
-        if (prevValue != VALUE_NONE && sd.rootDepth >= ASPIRATION_DEPTH && Config::AspirationWindow) {
-            Value delta = nextAspirationWindowDelta(prevValue);
-            alpha = std::max(prevValue - delta, -VALUE_INFINITE);
-            beta = std::min(prevValue + delta, VALUE_INFINITE);
-        }
 
         sd.rootAlpha = alpha;
         sd.pvIdx = 0;
