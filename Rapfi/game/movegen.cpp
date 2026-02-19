@@ -36,7 +36,7 @@ inline bool basicPatternFilter(const Board &board, Pos pos, Color side)
     Pattern4    p4 = c.pattern4[side];
 
     if (bool(Type & WINNING)) {
-        if (p4 >= B_FLEX4)
+        if (p4 >= I_BLOCK3_PLUS) 
             return true;
     }
 
@@ -75,8 +75,7 @@ inline bool basicPatternFilter(const Board &board, Pos pos, Color side)
                 return true;
         }
         else {
-            if (p4 >= L_FLEX2)
-                return true;
+            return true;
         }
     }
 
