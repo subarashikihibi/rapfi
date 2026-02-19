@@ -1907,7 +1907,14 @@ Value vcnsearch(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
     int     ttDepth = (int)DEPTH_LOWER_BOUND;
     bool    ttHit   = TT.probe(posKey, ttValue, ttEval, ttIsPv, ttBound, ttMove, ttDepth, ss->ply);
 
-    if (ttHit && ttDepth >= depth && (!PvNode || !thisThread->isMainThread())) {
+    // For VCN search, we always use DEPTH_QVCF as reference depth
+    // since depth parameter is negative (quiescence search depth)
+    int vcnRefDepth = (int)DEPTH_QVCF;
+    // For mate scores, use higher reference depth
+    if (ttHit && std::abs(ttValue) >= VALUE_MATE_IN_MAX_PLY)
+        vcnRefDepth = (int)DEPTH_QVCF + 100;
+    
+    if (ttHit && ttDepth >= vcnRefDepth && (!PvNode || !thisThread->isMainThread())) {
         if (ttBound & BOUND_LOWER)
             alpha = std::max(alpha, ttValue);
         if (ttBound & BOUND_UPPER)
@@ -1975,9 +1982,16 @@ Value vcnsearch(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
     // If no valid attack moves, return evaluation (cannot continue VCN)
     if (moveList == end) {
         // No valid VCN attack moves - return static eval
-        TT.store(posKey, bestValue, ss->staticEval, PvNode,
-                 bestValue >= beta ? BOUND_LOWER : BOUND_UPPER, Pos::NONE,
-                 (int)std::max(depth, DEPTH_QVCF), ss->ply);
+        int ttDepthNoMoves = (int)DEPTH_QVCF;
+        Bound boundNoMoves = bestValue >= beta ? BOUND_LOWER : BOUND_UPPER;
+        // For mate scores, use higher depth and ensure proper bound
+        if (std::abs(bestValue) >= VALUE_MATE_IN_MAX_PLY) {
+            ttDepthNoMoves = (int)DEPTH_QVCF + 100;
+            if (boundNoMoves == BOUND_UPPER)
+                boundNoMoves = BOUND_EXACT;
+        }
+        TT.store(posKey, bestValue, ss->staticEval, PvNode, boundNoMoves, Pos::NONE,
+                 ttDepthNoMoves, ss->ply);
         return bestValue;
     }
 
@@ -2035,10 +2049,27 @@ Value vcnsearch(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
     }
 
     // Step 11. Save TT entry
-    TT.store(posKey, bestValue, ss->staticEval, PvNode,
-             bestValue >= beta ? BOUND_LOWER : PvNode && bestValue > oldAlpha ? BOUND_EXACT
-                                                                              : BOUND_UPPER,
-             bestMove, (int)std::max(depth, DEPTH_QVCF), ss->ply);
+    // Use DEPTH_QVCF as depth for VCN search to ensure TT entries are properly recognized
+    int ttDepthStore = (int)DEPTH_QVCF;
+    // Determine bound type
+    Bound bound;
+    if (bestValue >= beta)
+        bound = BOUND_LOWER;
+    else if (PvNode && bestValue > oldAlpha)
+        bound = BOUND_EXACT;
+    else
+        bound = BOUND_UPPER;
+    
+    // For mate scores, use a higher depth and ensure BOUND_EXACT or BOUND_LOWER
+    // to prevent overwriting by non-mate scores
+    if (std::abs(bestValue) >= VALUE_MATE_IN_MAX_PLY) {
+        ttDepthStore = (int)DEPTH_QVCF + 100;  // Much higher depth for mate scores
+        // Mate scores should never be stored as BOUND_UPPER
+        if (bound == BOUND_UPPER)
+            bound = BOUND_EXACT;
+    }
+    
+    TT.store(posKey, bestValue, ss->staticEval, PvNode, bound, bestMove, ttDepthStore, ss->ply);
 
     assert(bestValue > -VALUE_INFINITE && bestValue < VALUE_INFINITE);
     return bestValue;
