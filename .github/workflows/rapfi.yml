@@ -3,7 +3,7 @@ name: Rapfi
 on:
   push:
     branches:
-      - master
+      - vcn
   pull_request:
     branches:
       - master
