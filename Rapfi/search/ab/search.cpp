@@ -1939,62 +1939,36 @@ Value vcnsearch(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
         return alpha;
     }
 
-    // Step 7. Generate attack moves
-    // For VCN, we generate moves based on the minimum pattern requirement
-    // N=4 (VCF): E_BLOCK4 and above (handled by existing VCF, shouldn't reach here)
-    // N=3 (VC3): H_FLEX3 and above
-    // N=2 (VC2): L_FLEX2 and above
+    // Step 7 & 8. Generate and search attack moves using NNUE-based MovePicker
+    // CRITICAL: In QSearch (depth <= 0), we MUST filter by pattern4 to prevent
+    // infinite recursion. Without this, the search will explode until MAX_PLY.
+    // The "cold moves" (NONE pattern) are handled by the main search (searchVCN),
+    // not here in the quiescence search.
+    MovePicker mp(Rule,
+                  board,
+                  MovePicker::ExtraArgs<MovePicker::MAIN> {
+                      ttMove,
+                      &searchData->mainHistory,
+                      &searchData->counterMoveHistory,
+                  });
 
-    // Use appropriate GenType based on VCN level
-    // We need to generate moves that are valid attacks for this VCN level
-    ScoredMove moveList[MAX_MOVES];
-    ScoredMove *end;
+    int atkCount = 0;
+    const int MAX_ATTACK_MOVES = 15;  // Only search top 15 moves by NNUE
 
-    if constexpr (N == 3) {
-        // VC3: generate H_FLEX3 and above (VCF moves + VCT moves)
-        end = generate<VCF | VCT>(board, moveList);
-    }
-    else if constexpr (N == 2) {
-        // VC2: generate L_FLEX2 and above (all threats)
-        end = generate<VCF | VCT | VC2>(board, moveList);
-    }
-    else {
-        // N==4 is handled by vcfsearch, shouldn't reach here
-        end = generate<VCF>(board, moveList);
-    }
-
-    // If no valid attack moves, return evaluation (cannot continue VCN)
-    if (moveList == end) {
-        // No valid VCN attack moves - return static eval
-        int ttDepthNoMoves = (int)DEPTH_QVCF;
-        Bound boundNoMoves = bestValue >= beta ? BOUND_LOWER : BOUND_UPPER;
-        // For mate scores, use higher depth and ensure proper bound
-        if (std::abs(bestValue) >= VALUE_MATE_IN_MAX_PLY) {
-            ttDepthNoMoves = (int)DEPTH_QVCF + 100;
-            if (boundNoMoves == BOUND_UPPER)
-                boundNoMoves = BOUND_EXACT;
-        }
-        TT.store(posKey, bestValue, ss->staticEval, PvNode, boundNoMoves, Pos::NONE,
-                 ttDepthNoMoves, ss->ply);
-        return bestValue;
-    }
-
-    // Sort moves by Pattern4 (higher pattern4 first)
-    // Note: ScoredMove::score is not initialized by generate(), so we use Pattern4 for sorting
-    std::sort(moveList, end, [&board, self](const ScoredMove &a, const ScoredMove &b) {
-        return board.cell(a.pos).pattern4[self] > board.cell(b.pos).pattern4[self];
-    });
-
-    // Step 8. Loop through attack moves
-    for (ScoredMove *sm = moveList; sm != end; ++sm) {
-        Pos move = *sm;
-
-        // Skip if not a valid VCN attack
-        Pattern4 p4 = board.cell(move).pattern4[self];
-        if (!isValidVCNAttack(p4, N))
+    while (Pos move = mp()) {
+        if (!board.isLegal(move))
             continue;
 
-        assert(board.isLegal(move));
+        // 【修复点】：在 QSearch 中必须过滤掉非强制的选点，防止向负深度无限递归！
+        Pattern4 p4 = board.cell(move).pattern4[self];
+        if (N == 3 && p4 < J_FLEX2_2X)
+            continue;  // VC3 至少需要双活二以上级别的进攻
+        if (N == 2 && p4 < L_FLEX2)
+            continue;  // VC2 至少需要单活二以上级别的进攻
+
+        // Limit search to top K moves sorted by NNUE
+        if (++atkCount > MAX_ATTACK_MOVES)
+            break;
 
         ss->currentMove   = move;
         ss->moveCount     = ++moveCount;
@@ -2007,6 +1981,7 @@ Value vcnsearch(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
         board.move<Rule>(move);
 
         // Call defence-side VCN search
+        // The defender's Pass mechanism will quickly refute useless attacks
         value = -vcndefend<Rule, NT, N>(board, ss + 1, -beta, -alpha, passCount, depth - 1);
 
         board.undo<Rule>();
@@ -2187,39 +2162,38 @@ Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
     if (PvNode && bestValue > alpha)
         alpha = bestValue;
 
-    // Step 6. Generate defence moves
-    // Defender should try to block opponent's threats
-    // CRITICAL: Use ALL to generate all candidate points, not just VCF/VCT/VC2
-    // Because generate<VCF|VCT> only checks defender's own patterns, not opponent's!
-    // If defender has no counter-attack, generate<VCF|VCT> returns empty list,
-    // causing defender to miss blocking moves and incorrectly pass.
-    ScoredMove moveList[MAX_MOVES];
-    ScoredMove *end = generate<ALL>(board, moveList);
+    // Step 6 & 7. Generate and search defence moves using NNUE-based MovePicker
+    // Instead of hard filtering by pattern4, we trust NNUE to sort moves intelligently.
+    // We only search the top K moves (e.g., 12) to prevent explosion, and rely on
+    // Pass mechanism as a safety net if none of these moves work.
+    MovePicker mp(Rule,
+                  board,
+                  MovePicker::ExtraArgs<MovePicker::MAIN> {
+                      ttMove,
+                      &searchData->mainHistory,
+                      &searchData->counterMoveHistory,
+                  });
 
-    // Sort moves by Pattern4 (higher pattern4 first for defence priority)
-    std::sort(moveList, end, [&board, self](const ScoredMove &a, const ScoredMove &b) {
-        return board.cell(a.pos).pattern4[self] > board.cell(b.pos).pattern4[self];
-    });
+    int defCount = 0;
+    const int MAX_DEFENCE_MOVES = 12;  // Only search top 12 moves by NNUE
 
-    // Step 7. Search defence moves
-    for (ScoredMove *sm = moveList; sm != end; ++sm) {
-        Pos move = *sm;
-
-        // Skip illegal moves
+    while (Pos move = mp()) {
         if (!board.isLegal(move))
             continue;
 
-        // Skip moves that don't help defend (no defensive value)
-        // A move has defensive value if it blocks opponent's threats or creates our own threats
-        Pattern4 selfP4 = board.cell(move).pattern4[self];
+        // 【修复点】：防守方在 QSearch 也必须具有极强的针对性，防止无限递归
         Pattern4 oppoP4 = board.cell(move).pattern4[oppo];
-        
-        // Must either:
-        // 1. Block an opponent threat (oppoP4 is significant)
-        // 2. Create our own threat (selfP4 is significant)
-        bool hasDefensiveValue = (oppoP4 >= L_FLEX2) || (selfP4 >= L_FLEX2);
-        if (!hasDefensiveValue)
+        Pattern4 selfP4 = board.cell(move).pattern4[self];
+
+        // 只有破坏了对手的威胁，或是自己形成了反击，才值得在负深度中搜索
+        if (N == 3 && oppoP4 < H_FLEX3 && selfP4 < J_FLEX2_2X)
             continue;
+        if (N == 2 && oppoP4 < L_FLEX2 && selfP4 < L_FLEX2)
+            continue;
+
+        // Limit search to top K moves sorted by NNUE
+        if (++defCount > MAX_DEFENCE_MOVES)
+            break;
 
         ss->currentMove   = move;
         ss->moveCount     = ++moveCount;
