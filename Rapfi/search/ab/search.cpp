@@ -1913,7 +1913,7 @@ Value vcnsearch(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
     int vcnRefDepth = (int)DEPTH_QVCF;
     // For mate scores, use higher reference depth
     if (ttHit && std::abs(ttValue) >= VALUE_MATE_IN_MAX_PLY)
-        vcnRefDepth = (int)DEPTH_QVCF + 100;
+        vcnRefDepth = (int)DEPTH_QVCF + 10;
     
     if (ttHit && ttDepth >= vcnRefDepth && (!PvNode || !thisThread->isMainThread())) {
         if (ttBound & BOUND_LOWER)
@@ -2065,9 +2065,6 @@ Value vcnsearch(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
     // to prevent overwriting by non-mate scores
     if (std::abs(bestValue) >= VALUE_MATE_IN_MAX_PLY) {
         ttDepthStore = (int)DEPTH_QVCF + 100;  // Much higher depth for mate scores
-        // Mate scores should never be stored as BOUND_UPPER
-        if (bound == BOUND_UPPER)
-            bound = BOUND_EXACT;
     }
     
     TT.store(posKey, bestValue, ss->staticEval, PvNode, bound, bestMove, ttDepthStore, ss->ply);
@@ -2318,9 +2315,7 @@ Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
         bound = BOUND_UPPER;
     
     if (std::abs(bestValue) >= VALUE_MATE_IN_MAX_PLY) {
-        ttDepthStore = (int)DEPTH_QVCF + 100;
-        if (bound == BOUND_UPPER)
-            bound = BOUND_EXACT;
+        ttDepthStore = (int)DEPTH_QVCF + 10;
     }
     
     TT.store(posKey, bestValue, ss->staticEval, PvNode, bound, bestMove, ttDepthStore, ss->ply);
