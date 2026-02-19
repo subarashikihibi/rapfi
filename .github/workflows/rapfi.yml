@@ -19,32 +19,6 @@ jobs:
       matrix:
         target:
           - {
-              name: linux-gcc,
-              os: ubuntu-22.04,
-              c_compiler: gcc,
-              cxx_compiler: g++,
-              cmake_command: "",
-              shell: "bash {0}"
-            }
-          - {
-              name: linux-clang,
-              os: ubuntu-22.04,
-              c_compiler: clang-19,
-              cxx_compiler: clang++-19,
-              cmake_command: "",
-              shell: "bash {0}"
-            }
-          - {
-              name: windows-gcc,
-              os: windows-latest,
-              c_compiler: gcc,
-              cxx_compiler: g++,
-              cmake_command: "",
-              msys_sys: 'mingw64',
-              msys_env: 'x86_64',
-              shell: "msys2 {0}"
-            }
-          - {
               name: windows-clang,
               os: windows-latest,
               c_compiler: clang,
