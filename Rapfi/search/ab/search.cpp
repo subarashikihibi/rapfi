@@ -72,6 +72,14 @@ Value vcnsearch(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
 template <Rule Rule, NodeType NT, int N>
 Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, int passCount = 0, Depth depth = 0.0f);
 
+// Strict VCN search functions (main search level)
+// searchVCNMain: Iterative deepening main loop for strict VCN search
+void searchVCNMain(MainSearchThread &th);
+template <Rule Rule, NodeType NT, int N>
+Value searchVCN(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth, bool cutNode, int passCount);
+template <NodeType NT>
+Value searchVCN(Rule rule, Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth, bool cutNode, int passCount);
+
 }  // namespace
 
 void ABSearchData::clearData(SearchThread &th)
@@ -139,36 +147,11 @@ void ABSearcher::searchMain(MainSearchThread &th)
 
         return;  // abnormal case: GUI might have a bug
     }
-    // VCN mode: check if target side to move has valid VCN moves
-    else if (opts.isVCNEnabled() && th.board->sideToMove() == opts.vcnTargetSide) {
-        // In VCN mode, if the target side has no valid VCN attack moves, return loss
-        Color self = th.board->sideToMove();
-        bool hasVCNMove = false;
-
-        // Check if there are any valid VCN attack moves
-        FOR_EVERY_EMPTY_POS(th.board, pos)
-        {
-            if (!th.board->isEmpty(pos))
-                continue;
-
-            Pattern4 p4 = th.board->cell(pos).pattern4[self];
-            if (opts.vcnLevel == 3 && p4 >= H_FLEX3) {
-                hasVCNMove = true;
-                break;
-            }
-            else if (opts.vcnLevel == 2 && p4 >= L_FLEX2) {
-                hasVCNMove = true;
-                break;
-            }
-        }
-
-        // If no valid VCN moves, return loss immediately
-        if (!hasVCNMove) {
-            th.rootMoves[0].value = mated_in(0);  // Loss
-            th.bestMove = th.rootMoves[0].pv[0];
-            printer.printBestmoveWithoutSearch(th, th.bestMove, th.rootMoves[0].value, 0, nullptr);
-            return;
-        }
+    // VCN mode: use strict VCN search as main search
+    else if (opts.isVCNEnabled()) {
+        // Use searchVCNMain for strict VCN search
+        searchVCNMain(th);
+        return;
     }
     // If we are winning, return directly
     else if (th.board->p4Count(th.board->sideToMove(), A_FIVE)) {
@@ -2350,5 +2333,720 @@ template Value vcndefend<Rule::RENJU, PV, 2>(Board &, SearchStack *, Value, Valu
 template Value vcndefend<Rule::RENJU, PV, 3>(Board &, SearchStack *, Value, Value, int, Depth);
 template Value vcndefend<Rule::RENJU, NonPV, 2>(Board &, SearchStack *, Value, Value, int, Depth);
 template Value vcndefend<Rule::RENJU, NonPV, 3>(Board &, SearchStack *, Value, Value, int, Depth);
+
+/// ============================================================================
+/// Strict VCN Search Implementation (Main Search Level)
+/// ============================================================================
+///
+/// This is a complete main search implementation for strict VCN search,
+/// featuring:
+/// 1. Full main search capabilities (TT, NNUE, LMR, History Heuristic)
+/// 2. Pass refutation mechanism for defender
+/// 3. Complete iterative deepening
+
+void searchVCNMain(MainSearchThread &th)
+{
+    SearchOptions &opts = th.options();
+    ABSearchData  &sd   = *th.searchDataAs<ABSearchData>();
+    ABSearcher   *searcher = static_cast<ABSearcher *>(th.threads.searcher());
+    Board        &board = *th.board;
+    Rule          rule = opts.rule.rule;
+
+    Value initValue = Evaluation::evaluate(board, rule);
+    StackArray stackArray(MAX_PLY, initValue);
+
+    int maxDepth = std::min(opts.maxDepth, std::clamp(Config::MaxSearchDepth, 2, MAX_DEPTH));
+    int startDepth = std::clamp(opts.startDepth, 1, maxDepth);
+
+    Value prevValue = VALUE_NONE;
+    int firstMateDepth = 0;
+
+    searcher->timectl.init(opts.turnTime,
+                           opts.matchTime,
+                           opts.timeLeft,
+                           {board.ply(), board.movesLeft()});
+    TT.incGeneration();
+
+    searcher->printer.printSearchStarts(th, searcher->timectl);
+
+    for (sd.rootDepth = startDepth; sd.rootDepth <= maxDepth && !th.threads.isTerminating();
+         sd.rootDepth++)
+    {
+        if (th.dbClient && searcher->timectl.elapsed() > 5000)
+            th.dbClient->sync(false);
+
+        for (RootMove &rm : th.rootMoves) {
+            rm.previousValue = rm.value;
+            rm.previousPv = rm.pv;
+        }
+
+        Value alpha = -VALUE_INFINITE;
+        Value beta = VALUE_INFINITE;
+
+        if (prevValue != VALUE_NONE && sd.rootDepth >= ASPIRATION_DEPTH && Config::AspirationWindow) {
+            Value delta = nextAspirationWindowDelta(prevValue);
+            alpha = std::max(prevValue - delta, -VALUE_INFINITE);
+            beta = std::min(prevValue + delta, VALUE_INFINITE);
+        }
+
+        sd.rootAlpha = alpha;
+        sd.pvIdx = 0;
+
+        Value value;
+        if (opts.vcnLevel == 3) {
+            if (rule == Rule::FREESTYLE)
+                value = searchVCN<Rule::FREESTYLE, Root, 3>(board, stackArray.rootStack(), alpha, beta, Depth(sd.rootDepth), false, 0);
+            else if (rule == Rule::STANDARD)
+                value = searchVCN<Rule::STANDARD, Root, 3>(board, stackArray.rootStack(), alpha, beta, Depth(sd.rootDepth), false, 0);
+            else if (rule == Rule::RENJU)
+                value = searchVCN<Rule::RENJU, Root, 3>(board, stackArray.rootStack(), alpha, beta, Depth(sd.rootDepth), false, 0);
+        }
+        else if (opts.vcnLevel == 2) {
+            if (rule == Rule::FREESTYLE)
+                value = searchVCN<Rule::FREESTYLE, Root, 2>(board, stackArray.rootStack(), alpha, beta, Depth(sd.rootDepth), false, 0);
+            else if (rule == Rule::STANDARD)
+                value = searchVCN<Rule::STANDARD, Root, 2>(board, stackArray.rootStack(), alpha, beta, Depth(sd.rootDepth), false, 0);
+            else if (rule == Rule::RENJU)
+                value = searchVCN<Rule::RENJU, Root, 2>(board, stackArray.rootStack(), alpha, beta, Depth(sd.rootDepth), false, 0);
+        }
+        else {
+            value = search<Root>(rule, board, stackArray.rootStack(), alpha, beta, Depth(sd.rootDepth), false);
+        }
+
+        prevValue = value;
+
+        std::stable_sort(th.rootMoves.begin(), th.rootMoves.end(), RootMoveValueComparator{});
+
+        if (!th.threads.isTerminating())
+            sd.completedDepth = sd.rootDepth;
+
+        if (th.threads.main() == &th)
+            searcher->printer.printPvCompletes(th, searcher->timectl, sd.rootDepth, 0, 1);
+
+        if (th.threads.main() == &th)
+            searcher->printer.printDepthCompletes(th, searcher->timectl, sd.completedDepth);
+
+        bool isMate = std::abs(th.rootMoves[0].value) >= VALUE_MATE_IN_MAX_PLY;
+        if (isMate && !firstMateDepth)
+            firstMateDepth = sd.rootDepth;
+
+        if (isMate && sd.rootDepth - firstMateDepth >= Config::NumIterationAfterMate) {
+            th.threads.stopThinking();
+            break;
+        }
+
+        if (opts.timeLimit && !th.threads.isTerminating()) {
+            float timeReduction = 1.0f;
+            if (searcher->timectl.checkStop({sd.rootDepth, 0, value, VALUE_NONE, 1.0f, 0.0f}, timeReduction)
+                && !th.inPonder) {
+                th.markPonderingAvailable();
+                th.threads.stopThinking();
+            }
+        }
+    }
+
+    if (th.dbClient)
+        th.dbClient->sync();
+
+    searcher->printer.printSearchEnds(th,
+                                       searcher->timectl,
+                                       sd.completedDepth,
+                                       th);
+
+    if (!th.inPonder)
+        th.bestMove = th.rootMoves[0].pv[0];
+}
+
+template <NodeType NT>
+Value searchVCN(Rule rule, Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth, bool cutNode, int passCount)
+{
+    assert(rule < RULE_NB);
+
+    auto searchWithRule = [&](Rule r) {
+        switch (r) {
+        default:
+        case Rule::FREESTYLE:
+            if (board.thisThread()->options().vcnLevel == 3)
+                return searchVCN<Rule::FREESTYLE, NT, 3>(board, ss, alpha, beta, depth, cutNode, passCount);
+            else
+                return searchVCN<Rule::FREESTYLE, NT, 2>(board, ss, alpha, beta, depth, cutNode, passCount);
+        case Rule::STANDARD:
+            if (board.thisThread()->options().vcnLevel == 3)
+                return searchVCN<Rule::STANDARD, NT, 3>(board, ss, alpha, beta, depth, cutNode, passCount);
+            else
+                return searchVCN<Rule::STANDARD, NT, 2>(board, ss, alpha, beta, depth, cutNode, passCount);
+        case Rule::RENJU:
+            if (board.thisThread()->options().vcnLevel == 3)
+                return searchVCN<Rule::RENJU, NT, 3>(board, ss, alpha, beta, depth, cutNode, passCount);
+            else
+                return searchVCN<Rule::RENJU, NT, 2>(board, ss, alpha, beta, depth, cutNode, passCount);
+        }
+    };
+
+    return searchWithRule(rule);
+}
+
+template <Rule Rule, NodeType NT, int N>
+Value searchVCN(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth, bool cutNode, int passCount)
+{
+    constexpr bool PvNode = NT == PV || NT == Root;
+    constexpr bool RootNode = NT == Root;
+    constexpr int MaxPass = 6 - N;
+
+    assert(-VALUE_INFINITE <= alpha && alpha < beta && beta <= VALUE_INFINITE);
+    assert(PvNode || (alpha == beta - 1));
+    assert(DEPTH_LOWER_BOUND <= depth && depth < DEPTH_UPPER_BOUND);
+    assert(!(PvNode && cutNode));
+    assert(0 <= ss->ply && ss->ply < MAX_PLY);
+    assert(passCount <= MaxPass);
+
+    SearchThread  *thisThread = board.thisThread();
+    ABSearchData  *searchData = thisThread->searchDataAs<ABSearchData>();
+    SearchOptions &opts = thisThread->options();
+    thisThread->numNodes.fetch_add(1, std::memory_order_relaxed);
+
+    Color    self = board.sideToMove(), oppo = ~self;
+    bool     isAttacker = (self == opts.vcnTargetSide);
+    uint16_t oppo5 = board.p4Count(oppo, A_FIVE);
+    uint16_t oppo4 = oppo5 + board.p4Count(oppo, B_FLEX4);
+
+    int   moveCount = 0;
+    Value bestValue = -VALUE_INFINITE;
+    Value value;
+    Pos   bestMove = Pos::NONE;
+    HistoryTracker histTracker(board, ss);
+
+    if (PvNode && thisThread->selDepth <= ss->ply)
+        thisThread->selDepth = ss->ply + 1;
+
+    if (!RootNode) {
+        if (thisThread->isMainThread())
+            static_cast<MainSearchThread *>(thisThread)->checkExit();
+
+        if (board.movesLeft() == 0 || board.nonPassMoveCount() >= opts.maxMoves)
+            return getDrawValue(board, opts, ss->ply);
+
+        if (ss->ply >= MAX_PLY)
+            return Evaluation::evaluate<Rule>(board, alpha, beta);
+
+        if ((value = quickWinCheck<Rule>(board, ss->ply, beta)) != VALUE_ZERO) {
+            if (board.nonPassMoveCount() + mate_step(value, ss->ply) > opts.maxMoves)
+                value = getDrawValue(board, opts, ss->ply);
+            return value;
+        }
+
+        alpha = std::max(mated_in(ss->ply), alpha);
+        beta = std::min(mate_in(ss->ply + 1), beta);
+        if (alpha >= beta)
+            return alpha;
+
+        (ss + 2)->statScore = 0;
+        (ss + 1)->numNullMoves = ss->numNullMoves;
+    }
+    else
+        searchData->rootDelta = beta - alpha;
+
+    if (!isAttacker && passCount < MaxPass && !RootNode) {
+        ss->currentMove = Pos::PASS;
+        board.move<Rule>(Pos::PASS);
+
+        Value passValue = -searchVCN<Rule, NT, N>(board, ss + 1, -beta, -alpha, depth - 1.0f, !cutNode, passCount + 1);
+
+        board.undo<Rule>();
+
+        if (thisThread->threads.isTerminating())
+            return VALUE_NONE;
+
+        if (passValue > -VALUE_MATE_IN_MAX_PLY) {
+            Pos skipMove = ss->skipMove;
+            HashKey posKey = board.zobristKey() ^ (skipMove ? Hash::LCHash(skipMove) : 0) ^ HashKey(passCount * 0x9E3779B97F4A7C15ULL);
+            TT.store(posKey, passValue, ss->staticEval, false, BOUND_LOWER, Pos::PASS, (int)depth, ss->ply);
+            return passValue;
+        }
+    }
+
+    Pos     skipMove = ss->skipMove;
+    HashKey posKey = board.zobristKey() ^ (skipMove ? Hash::LCHash(skipMove) : 0) ^ HashKey(passCount * 0x9E3779B97F4A7C15ULL);
+    Value   ttValue = VALUE_NONE;
+    Value   ttEval = VALUE_NONE;
+    bool    ttIsPv = false;
+    Bound   ttBound = BOUND_NONE;
+    Pos     ttMove = Pos::NONE;
+    int     ttDepth = 0;
+    bool    ttHit = TT.probe(posKey, ttValue, ttEval, ttIsPv, ttBound, ttMove, ttDepth, ss->ply);
+
+    if (RootNode && searchData->completedDepth.load(std::memory_order_relaxed))
+        ttMove = thisThread->rootMoves[0].pv[0];
+
+    if (!skipMove)
+        ss->ttPv = PvNode || ttHit && ttIsPv;
+    (ss + 1)->ttPv = false;
+
+    if (!PvNode && ttHit && ttDepth >= depth
+        && (ttBound & (ttValue >= beta ? BOUND_LOWER : BOUND_UPPER))) {
+        histTracker.updateTTMoveStats(depth, ttMove, ttValue, beta);
+        return ttValue;
+    }
+
+    Value eval = VALUE_NONE;
+    int improvement = 0;
+
+    (ss + 2)->killers[0] = Pos::NONE;
+    (ss + 2)->killers[1] = Pos::NONE;
+
+    if (oppo4) {
+        ss->staticEval = -(ss - 1)->staticEval;
+        if (oppo5)
+            goto moves_loop;
+    }
+    else if (!RootNode) {
+        if (ttHit) {
+            ss->staticEval = eval = ttEval;
+            if (eval == VALUE_NONE)
+                ss->staticEval = eval = Evaluation::evaluate<Rule>(board, alpha, beta);
+            if (ttValue != VALUE_NONE
+                && (ttBound & (ttValue > ss->staticEval ? BOUND_LOWER : BOUND_UPPER)))
+                eval = ttValue;
+        }
+        else {
+            ss->staticEval = eval = Evaluation::evaluate<Rule>(board, alpha, beta);
+            if (!skipMove)
+                TT.store(posKey, VALUE_NONE, ss->staticEval, ss->ttPv, BOUND_NONE, Pos::NONE,
+                         (int)DEPTH_NONE, ss->ply);
+        }
+
+        improvement = ss->staticEval - (ss - 2)->staticEval;
+    }
+
+    if (!PvNode
+        && (alpha < VALUE_MATE_IN_MAX_PLY || !ttHit)
+        && eval + razorMargin<Rule>(depth) < alpha) {
+        return vcnsearch<Rule, NonPV, N>(board, ss, alpha, alpha + 1, passCount, 0.0f);
+    }
+
+    if (!PvNode && eval < VALUE_MATE_IN_MAX_PLY
+        && beta > VALUE_MATED_IN_MAX_PLY
+        && eval - futilityMargin<Rule>(depth - 1, cutNode && !ttHit, improvement > 0) >= beta
+        && !((ss - 2)->moveP4[self] >= E_BLOCK4 && (ss - 4)->moveP4[self] >= E_BLOCK4))
+        return eval;
+
+    if (!PvNode && !oppo4 && !skipMove && eval >= beta
+        && board.getLastMove() != Pos::PASS
+        && ss->staticEval >= beta + nullMoveMargin<Rule>(depth)) {
+        Depth r = nullMoveReduction<Rule>(depth);
+        ss->currentMove = Pos::PASS;
+
+        (ss + 1)->numNullMoves++;
+        board.move<Rule>(Pos::PASS);
+        TT.prefetch(board.zobristKey());
+        value = -searchVCN<Rule, NonPV, N>(board, ss + 1, -beta, -beta + 1, depth - r, !cutNode, passCount);
+        board.undo<Rule>();
+        (ss + 1)->numNullMoves--;
+
+        if (value >= beta) {
+            if (value >= VALUE_MATE_IN_MAX_PLY)
+                value = beta;
+
+            if (std::abs(beta) < VALUE_MATE_IN_MAX_PLY)
+                return value;
+            else {
+                Value v = searchVCN<Rule, NonPV, N>(board, ss, beta - 1, beta, depth - r, false, passCount);
+                if (v >= beta)
+                    return value;
+            }
+        }
+    }
+
+    if (!RootNode && PvNode && !ttMove)
+        depth -= IIR_REDUCTION_PV;
+
+    if (PvNode && depth > 1 && ttMove)
+        depth -= std::clamp((depth - ttDepth) * IIR_REDUCTION_TT, 0.0f, IIR_REDUCTION_TT_MAX);
+
+    if (depth <= 0) {
+        return vcnsearch<Rule, NT, N>(board, ss, alpha, beta, passCount, depth);
+    }
+
+    if (depth >= IID_DEPTH && !ttMove) {
+        depth -= IIR_REDUCTION;
+        searchVCN<Rule, NT, N>(board, ss, alpha, beta, depth - iidDepthReduction<Rule>(depth), cutNode, passCount);
+        Value tmpEval;
+        bool tmpIsPv;
+        Bound tmpBound;
+        int tmpDepth;
+        ttHit = TT.probe(posKey, ttValue, tmpEval, tmpIsPv, tmpBound, ttMove, tmpDepth, ss->ply);
+    }
+
+moves_loop:
+    ABSearcher  *searcher    = static_cast<ABSearcher *>(thisThread->threads.searcher());
+    TimeControl &timectl     = searcher->timectl;
+    uint64_t     curNumNodes = 0;
+    ss->dbChildWritten       = false;
+
+    // Calculate a complexity metric for current position
+    uint16_t complexCount = 1;
+    for (int pat4 = L_FLEX2; pat4 <= D_BLOCK4_PLUS; pat4++) {
+        complexCount += board.p4Count(self, (Pattern4)pat4);
+        complexCount += board.p4Count(oppo, (Pattern4)pat4);
+    }
+    float complexity = ::logf(complexCount);
+
+    // Fail-High reduction (~50 elo)
+    // Indicate cutNode that will probably fail high if current eval is far above beta
+    bool likelyFailHigh = !PvNode && cutNode && eval >= beta + failHighMargin(depth, oppo4);
+
+    MovePicker mp(Rule,
+                  board,
+                  MovePicker::ExtraArgs<MovePicker::MAIN> {
+                      ttMove,
+                      &searchData->mainHistory,
+                      &searchData->counterMoveHistory,
+                  });
+
+    // Step 11. Loop through all legal moves until no moves remain
+    // or a beta cutoff occurs.
+    while (Pos move = mp()) {
+        assert(board.isLegal(move));
+
+        // Skip excluded move when in Singular extension search
+        if (!RootNode && move == skipMove)
+            continue;
+
+        if (RootNode) {
+            // Skip moves not in root move list and PV moves that have been already searched
+            if (!std::count(thisThread->rootMoves.begin() + searchData->pvIdx,
+                           thisThread->rootMoves.end(),
+                           move))
+                continue;
+
+            curNumNodes = thisThread->numNodes.load(std::memory_order_relaxed);
+        }
+
+        if (RootNode && thisThread->isMainThread())
+            searcher->printer.printEnteringMove(*static_cast<MainSearchThread *>(thisThread),
+                                                timectl,
+                                                searchData->pvIdx,
+                                                searchData->rootDepth,
+                                                move);
+
+        // Initialize heruistic information
+        ss->moveCount     = ++moveCount;
+        ss->moveP4[BLACK] = board.cell(move).pattern4[BLACK];
+        ss->moveP4[WHITE] = board.cell(move).pattern4[WHITE];
+
+        // False forbidden move in Renju is considered as important move
+        bool importantMove = ss->moveP4[self] >= J_FLEX2_2X || ss->moveP4[oppo] >= H_FLEX3
+                             || (Rule == Rule::RENJU && ss->moveP4[BLACK] == FORBID);
+        bool trivialMove = ss->moveP4[BLACK] == NONE && ss->moveP4[WHITE] == NONE;
+
+        int  distOppo = Pos::distance(move, (ss - 1)->currentMove);
+        int  distSelf = Pos::distance(move, (ss - 2)->currentMove);
+        bool distract = distSelf > (Rule == RENJU ? 5 : 4) && distOppo > 4;
+
+        // Step 12. Pruning at shallow depth
+        // Do pruning only when we have non-losing moves, otherwise we may have a false mate.
+        if (!RootNode && bestValue > VALUE_MATED_IN_MAX_PLY) {
+            // Move count pruning: skip move if movecount is above threshold
+            if (moveCount >= futilityMoveCount(depth, improvement > 0))
+                continue;
+
+            // Skip trivial moves at lower depth
+            if (trivialMove && depth < TRIVIAL_PRUN_DEPTH)
+                continue;
+
+            // Policy based pruning
+            if (mp.hasPolicyScore() && mp.curMoveScore() < policyPruningScore<Rule>(depth))
+                continue;
+
+            // Prun distract defence move which is likely to delay a winning
+            if (oppo4 && depth < TRIVIAL_PRUN_DEPTH && ss->moveP4[oppo] < E_BLOCK4 && distract)
+                continue;
+        }
+
+        // Step 13. Extensions
+        Depth extension = 0;
+
+        // Singular response extension for opponent B4 attack
+        if (oppo5)
+            extension = OPPO5_EXT;
+
+        // Singular extension: only one move fails high while other moves fails low on a search of
+        // (alpha-s, beta-s), then this move is singular and should be extended.
+        else if (!RootNode && depth >= SE_DEPTH && move == ttMove
+                 && !skipMove
+                 && std::abs(ttValue) < VALUE_MATE_IN_MAX_PLY
+                 && (ttBound & BOUND_LOWER)
+                 && ttDepth >= depth - SE_TTE_DEPTH
+        ) {
+            bool  formerPv = !PvNode && ss->ttPv;
+            Value singularBeta =
+                std::max(ttValue - singularMargin<Rule>(depth, formerPv), -VALUE_MATE);
+
+            // Exclude ttMove from the reduced depth search to see the value of second best move
+            ss->skipMove = move;
+            value        = searchVCN<Rule, NonPV, N>(board,
+                                        ss,
+                                        singularBeta - 1,
+                                        singularBeta,
+                                        depth - singularReduction(depth, formerPv),
+                                        cutNode,
+                                        passCount);
+            ss->skipMove = Pos::NONE;
+
+            // Extend if only the ttMove fails high, while other moves fails low.
+            if (value < singularBeta) {
+                // Extend two ply if current non-pv position is highly singular.
+                if (!PvNode && value < singularBeta - doubleSEMargin(depth)
+                    && ss->extraExtension < SE_EXTRA_MAX_DEPTH)
+                    extension = 2.0f;
+                else
+                    extension = 1.0f;
+            }
+            // Multi-cut pruning: we also failed high on a reduced search without ttMove.
+            else if (singularBeta >= beta)
+                return beta;
+            // Reduce if we are likely to fail high.
+            else if (ttValue >= beta)
+                extension = -SE_REDUCTION_FH;
+        }
+
+        // Extension for ttmove without singular extension
+        else if (move == ttMove) {
+            // Extension for ttmove
+            extension = PvNode ? TTM_EXT_PV : TTM_EXT_NONPV;
+
+            // Additional extension for near B4 ttmove
+            if (ss->moveP4[self] >= E_BLOCK4 && distSelf <= 6)
+                extension += (distSelf <= 4 ? NEARB4_EXT_DIST4 : NEARB4_EXT_DIST6);
+        }
+
+        // Fail high reduction
+        if (likelyFailHigh) {
+            if (ss->moveP4[self] >= E_BLOCK4) {
+                // If we failed high for two continous E_BLOCK4 moves, extend rather than reduce
+                if ((ss - 2)->moveP4[self] >= E_BLOCK4)
+                    extension += 1.0f;
+            }
+            else
+                extension -= 1.0f;
+        }
+
+        // Calculate new depth for this move
+        Depth newDepth     = depth - 1.0f + extension;
+        ss->currentMove    = move;
+        ss->extraExtension = (ss - 1)->extraExtension + std::max(extension - 1.0f, 0.0f);
+
+        // Step 14. Make the move
+        board.move<Rule>(move);
+        TT.prefetch(board.zobristKey());
+
+        // Step 15. Late move reduction (LMR). Moves are searched with a reduced
+        // depth and will be re-searched at full depth if fail high.
+        if (depth >= 2 && moveCount > 1 + RootNode) {
+            Depth r = reduction<Rule, PvNode>(searcher->reductions,
+                                              depth,
+                                              moveCount,
+                                              improvement,
+                                              beta - alpha,
+                                              searchData->rootDelta);
+
+            // Policy based reduction (~59 elo)
+            if (mp.hasPolicyScore())
+                r += policyReduction<Rule>(mp.curMoveScore()
+                                           * (0.1f / Evaluation::PolicyBuffer::ScoreScale));
+
+            // Dynamic reduction based on complexity (~2 elo)
+            r += complexity * complexityReduction<Rule>(trivialMove, importantMove, distract);
+
+            // Decrease reduction if position is or has been on the PV (~10 elo)
+            if (ss->ttPv)
+                r -= TTPV_NEG_REDUCTION;
+
+            // Increase reduction for nodes that does not improve root alpha (~0 elo)
+            if (!RootNode && (ss->ply & 1) && bestValue >= -searchData->rootAlpha)
+                r += NO_ALPHA_IMPROVING_REDUCTION;
+
+            // Increase reduction for cut nodes if is not killer moves (~5 elo)
+            if (cutNode && !(!oppo4 && ss->isKiller(move) && ss->moveP4[self] < H_FLEX3))
+                r += NOKILLER_CUTNODE_REDUCTION;
+
+            // Increase reduction for useless defend move (~6 elo)
+            if (oppo4 && ss->moveP4[oppo] < E_BLOCK4) {
+                r += (distOppo > 4 ? OPPO_USELESS_DEFEND_REDUCTION : 0);
+                r += (distSelf > 4 ? SELF_USELESS_DEFEND_REDUCTION : 0);
+            }
+
+            // Decrease reduction for continuous attack (~5 elo)
+            if (!oppo4 && (ss - 2)->moveP4[self] >= H_FLEX3
+                && (ss->moveP4[self] >= H_FLEX3 || distSelf <= 4 && ss->moveP4[self] >= J_FLEX2_2X))
+                r -= CONTINUOUS_ATTACK_EXT;
+
+            if constexpr (Rule == Rule::RENJU) {
+                // Decrease reduction for false forbidden move in Renju (~6 elo)
+                if (ss->moveP4[BLACK] == FORBID)
+                    r -= FALSE_FORBID_LESS_REDUCTION;
+            }
+
+            // Update statScore of this node
+            ss->statScore = statScore(searchData->mainHistory, self, move);
+
+            // Decrease/increase reduction for moves with a good/bad history (~9 elo)
+            r -= extensionFromStatScore(ss->statScore, depth);
+
+            // Allow LMR to do deeper search in some circumstances
+            // Clamp the LMR depth to newDepth (no depth less than one)
+            Depth d = std::max(std::min(newDepth - r, newDepth + 1), 1.0f);
+
+            value = -searchVCN<Rule, NonPV, N>(board, ss + 1, -(alpha + 1), -alpha, d, true, passCount);
+
+            if (value > alpha && d < newDepth) {
+                // Extra extension in lmr
+                Depth ext = lmrExtension<Rule>(newDepth, d, value, alpha, bestValue);
+                // Do not allow more extension if extra extension is already high
+                if (ss->extraExtension >= LMR_EXTRA_MAX_DEPTH)
+                    ext = std::min(ext, 1.0f);
+                else
+                    ss->extraExtension += std::max(ext - 1.0f, 0.0f);
+                newDepth += ext;
+
+                if (d < newDepth)
+                    value = -searchVCN<Rule, NonPV, N>(board,
+                                                 ss + 1,
+                                                 -(alpha + 1),
+                                                 -alpha,
+                                                 newDepth,
+                                                 !cutNode,
+                                                 passCount);
+            }
+        }
+
+        // Step 16. Full depth search when LMR is skipped or fails high
+        else if (!PvNode || moveCount > 1) {
+            // If expected reduction is high, we reduce search depth by 1 here
+            value = -searchVCN<Rule, NonPV, N>(board, ss + 1, -(alpha + 1), -alpha, newDepth, !cutNode, passCount);
+        }
+
+        // For PV nodes only, do a full PV search on the first move or after a fail
+        // high (in the latter case search only if value < beta), otherwise let the
+        // parent node fail low with value <= alpha and try another move.
+        if (PvNode
+            && (moveCount == 1
+                || (value > alpha && (RootNode || value < beta)))) {
+            (ss + 1)->pv[0]        = Pos::NONE;
+            (ss + 1)->dbValueDepth = INT16_MIN;
+            value = -searchVCN<Rule, PV, N>(board, ss + 1, -beta, -alpha, newDepth, false, passCount);
+        }
+
+        // Step 17. Undo move
+        board.undo<Rule>();
+
+        if (RootNode && thisThread->isMainThread())
+            searcher->printer.printLeavingMove(*static_cast<MainSearchThread *>(thisThread),
+                                               timectl,
+                                               searchData->pvIdx,
+                                               searchData->rootDepth,
+                                               move);
+
+        // Step 18. Check for a new best move
+        if (thisThread->threads.isTerminating()) {
+            return VALUE_NONE;
+        }
+
+        assert(value > -VALUE_INFINITE && value < VALUE_INFINITE);
+
+        if (RootNode) {
+            Value      moveValue = value;
+            RootMove  &rm = *std::find(thisThread->rootMoves.begin(), thisThread->rootMoves.end(), move);
+
+            // Check for PV move or new best move.
+            rm.numNodes += thisThread->numNodes.load(std::memory_order_relaxed) - curNumNodes;
+            rm.selDepth = thisThread->selDepth;
+            if (moveCount == 1 || value > alpha) {
+                rm.value = moveValue;
+                rm.pv.resize(1);
+
+                assert((ss + 1)->pv);
+
+                for (Pos *m = (ss + 1)->pv; *m != Pos::NONE; m++)
+                    rm.pv.push_back(*m);
+
+                // We record how often the best move has been changed in each iteration.
+                // When the best move changes frequently, we allocate some more time.
+                if (moveCount > 1)
+                    searchData->bestMoveChanges++;
+            }
+        }
+
+        if (value > bestValue) {
+            bestValue = value;
+
+            if (value > alpha) {
+                bestMove = move;
+
+                if (PvNode)
+                    ss->updatePv(move);
+
+                if (PvNode && value < beta)
+                    alpha = value;
+                else
+                    break;
+            }
+        }
+    }
+
+    if (!moveCount) {
+        bestValue = skipMove ? alpha
+                             : (board.p4Count(oppo, A_FIVE) ? mated_in(ss->ply + 2)
+                                                            : mated_in(ss->ply + 4));
+
+        if (std::abs(bestValue) >= VALUE_MATE_IN_MAX_PLY) {
+            if (board.nonPassMoveCount() + mate_step(bestValue, ss->ply) > opts.maxMoves)
+                bestValue = getDrawValue(board, opts, ss->ply);
+        }
+
+        if (RootNode) {
+            std::for_each(thisThread->rootMoves.begin() + searchData->pvIdx,
+                          thisThread->rootMoves.end(),
+                          [=](RootMove &rm) { rm.value = bestValue; });
+        }
+    }
+    else if (bestMove)
+        histTracker.updateBestmoveStats(depth, bestMove, bestValue);
+
+    Bound bound = bestValue >= beta ? BOUND_LOWER : PvNode && bestMove ? BOUND_EXACT : BOUND_UPPER;
+
+    if (!skipMove
+        && !(RootNode && (searchData->pvIdx || opts.balanceMode || opts.blockMoves.size())))
+        TT.store(posKey, bestValue, ss->staticEval, ss->ttPv, bound, bestMove, (int)depth, ss->ply);
+
+    assert(bestValue > -VALUE_INFINITE && bestValue < VALUE_INFINITE);
+    return bestValue;
+}
+
+// Explicit template instantiations for strict VCN search
+template Value searchVCN<Root>(Rule, Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<PV>(Rule, Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<NonPV>(Rule, Board &, SearchStack *, Value, Value, Depth, bool, int);
+
+template Value searchVCN<Rule::FREESTYLE, Root, 2>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<Rule::FREESTYLE, Root, 3>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<Rule::FREESTYLE, PV, 2>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<Rule::FREESTYLE, PV, 3>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<Rule::FREESTYLE, NonPV, 2>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<Rule::FREESTYLE, NonPV, 3>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+
+template Value searchVCN<Rule::STANDARD, Root, 2>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<Rule::STANDARD, Root, 3>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<Rule::STANDARD, PV, 2>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<Rule::STANDARD, PV, 3>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<Rule::STANDARD, NonPV, 2>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<Rule::STANDARD, NonPV, 3>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+
+template Value searchVCN<Rule::RENJU, Root, 2>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<Rule::RENJU, Root, 3>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<Rule::RENJU, PV, 2>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<Rule::RENJU, PV, 3>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<Rule::RENJU, NonPV, 2>(Board &, SearchStack *, Value, Value, Depth, bool, int);
+template Value searchVCN<Rule::RENJU, NonPV, 3>(Board &, SearchStack *, Value, Value, Depth, bool, int);
 
 }  // namespace
