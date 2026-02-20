@@ -150,11 +150,6 @@ void think(Board                             &board,
     options.swapable            = swapable;
     options.disableOpeningQuery = disableOpeningQuery;
 
-    // Reset VCN mode after this search (VCN commands set these before calling think)
-    auto vcnMode = options.vcnMode;
-    auto vcnLevel = options.vcnLevel;
-    auto vcnTargetSide = options.vcnTargetSide;
-
     if (Config::ReloadConfigEachMove)
         loadConfig();
 
@@ -184,11 +179,6 @@ void think(Board                             &board,
         // Start pondering search if needed
         if (Search::Threads.main()->startPonderAfterThinking)
             Search::Threads.startThinking(board, options, true);
-
-        // Reset VCN options after search completes
-        options.vcnMode = Search::SearchOptions::VCN_NONE;
-        options.vcnLevel = 4;
-        options.vcnTargetSide = BLACK;
     });
 }
 
@@ -741,42 +731,6 @@ void nbest()
 {
     std::cin >> options.multiPV;
     think(*board, std::max<uint16_t>(options.multiPV, 1));
-}
-
-/// VCN (Victory by Continue N) search commands
-/// VC4 = VCF (continuous four), defender cannot pass 2 times
-/// VC3 = continuous three, defender can pass up to 3 times
-/// VC2 = continuous two, defender can pass up to 4 times
-void vc2black()
-{
-    options.vcnMode = Search::SearchOptions::VCN_MATE;
-    options.vcnLevel = 2;
-    options.vcnTargetSide = BLACK;
-    think(*board, 1, Search::SearchOptions::BALANCE_NONE, false, true);
-}
-
-void vc2white()
-{
-    options.vcnMode = Search::SearchOptions::VCN_MATE;
-    options.vcnLevel = 2;
-    options.vcnTargetSide = WHITE;
-    think(*board, 1, Search::SearchOptions::BALANCE_NONE, false, true);
-}
-
-void vc3black()
-{
-    options.vcnMode = Search::SearchOptions::VCN_MATE;
-    options.vcnLevel = 3;
-    options.vcnTargetSide = BLACK;
-    think(*board, 1, Search::SearchOptions::BALANCE_NONE, false, true);
-}
-
-void vc3white()
-{
-    options.vcnMode = Search::SearchOptions::VCN_MATE;
-    options.vcnLevel = 3;
-    options.vcnTargetSide = WHITE;
-    think(*board, 1, Search::SearchOptions::BALANCE_NONE, false, true);
 }
 
 void showForbid()
@@ -1373,10 +1327,6 @@ bool runProtocol()
     else if (cmd == "YXBLOCKUNDO")         CheckBoardOK([] { getBlock(true); });
     else if (cmd == "YXBLOCKRESET")        CheckBoardOK([] { options.blockMoves.clear(); });
     else if (cmd == "YXNBEST")             CheckBoardOK(nbest);
-    else if (cmd == "YXVC2BLACK")          CheckBoardOK(vc2black);
-    else if (cmd == "YXVC2WHITE")          CheckBoardOK(vc2white);
-    else if (cmd == "YXVC3BLACK")          CheckBoardOK(vc3black);
-    else if (cmd == "YXVC3WHITE")          CheckBoardOK(vc3white);
     else if (cmd == "YXSHOWFORBID")        CheckBoardOK(showForbid);
     else if (cmd == "YXBALANCEONE")        CheckBoardOK([] { balance(Search::SearchOptions::BALANCE_ONE); });
     else if (cmd == "YXBALANCETWO")        CheckBoardOK([] { balance(Search::SearchOptions::BALANCE_TWO); });

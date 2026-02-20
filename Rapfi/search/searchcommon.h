@@ -160,23 +160,8 @@ struct SearchOptions
     /// Blocked moves, which are filtered out before searching
     std::vector<Pos> blockMoves;
 
-    /// VCN (Victory by Continue N) search mode
-    /// Enables strict VCN search where defender can pass up to (6-N) times
-    enum VCNMode {
-        VCN_NONE,    // Normal search
-        VCN_MATE,    // Search until mate is found
-    } vcnMode = VCN_NONE;
-
-    /// VCN level: 4=VCF, 3=VC3, 2=VC2
-    int vcnLevel = 4;
-
-    /// VCN target side (the side we are checking for VCN win)
-    Color vcnTargetSide = BLACK;
-
     /// Checks if we are in analysis mode.
     bool isAnalysisMode() const { return !timeLimit && !maxNodes; }
-    /// Checks if VCN search is enabled.
-    bool isVCNEnabled() const { return vcnMode != VCN_NONE; }
     /// Set time control config according to the rule:
     ///     MatchTime (ms) |              TurnTime (ms)
     ///                    | less than 0 | equal to 0 | more than 0
