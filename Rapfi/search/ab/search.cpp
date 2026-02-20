@@ -1548,6 +1548,7 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
 
     // Step 1. Initialize node
     SearchThread *thisThread = board.thisThread();
+    ABSearchData *searchData = thisThread->searchDataAs<ABSearchData>();
     thisThread->numNodes.fetch_add(1, std::memory_order_relaxed);
 
     Color self = board.sideToMove(), oppo = ~self;
@@ -1897,9 +1898,7 @@ Value vcnsearch(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
         return alpha;
 
     // Step 4. Transposition table lookup
-    // Use a modified key that includes passCount to avoid conflicts between
-    // positions with different remaining pass counts
-    HashKey posKey  = board.zobristKey() ^ HashKey(passCount * 0x9E3779B97F4A7C15ULL);
+    HashKey posKey  = board.zobristKey();
     Value   ttValue = VALUE_NONE;
     Value   ttEval  = VALUE_NONE;
     bool    ttIsPv  = false;
@@ -2079,16 +2078,6 @@ Value vcnsearch(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
 /// The VCN search function for defend side.
 /// @tparam N VCN level (2, 3, or 4)
 /// @param passCount Number of times defender has already passed
-/// 
-/// VCN Defence Logic:
-/// In strict VCN, the defender can pass up to (6-N) times. However, this does NOT
-/// mean the defender can ONLY pass. A proper VCN defence must:
-/// 1. Try to defend against opponent's threats (block their continuations)
-/// 2. Try counter-attacks (if we have our own threats)
-/// 3. Try passing (if we still have pass quota)
-/// 
-/// The attacker wins only if they can force a win even when defender plays optimally
-/// (defending when needed, counter-attacking when possible, and passing only when beneficial).
 template <Rule Rule, NodeType NT, int N>
 Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, int passCount, Depth depth)
 {
@@ -2103,15 +2092,11 @@ Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
 
     // Step 1. Initialize node
     SearchThread *thisThread = board.thisThread();
-    ABSearchData *searchData = thisThread->searchDataAs<ABSearchData>();
     thisThread->numNodes.fetch_add(1, std::memory_order_relaxed);
 
     Color    self = board.sideToMove(), oppo = ~self;
     uint16_t oppo5 = board.p4Count(oppo, A_FIVE);
-    int      moveCount = 0;
-    Value    bestValue = -VALUE_INFINITE, value;
-    Value    oldAlpha  = alpha;
-    Pos      bestMove  = Pos::NONE;
+    Value    value;
 
     // Update selDepth
     if (PvNode && thisThread->selDepth <= ss->ply)
@@ -2124,8 +2109,8 @@ Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
     if (ss->ply >= MAX_PLY)
         return Evaluation::evaluate<Rule>(board, alpha, beta);
 
-    // Step 3. Handle forced defence (opponent has A_FIVE threat)
-    // If opponent has A_FIVE threat, we MUST defend - no choice here
+    // Step 3. Handle defence
+    // If opponent has A_FIVE threat, we must defend
     if (oppo5) {
         Pos move = board.stateInfo().lastPattern4(oppo, A_FIVE);
         assert(board.cell(move).pattern4[oppo] == A_FIVE);
@@ -2157,128 +2142,12 @@ Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
         return value;
     }
 
-    // Step 4. Transposition table lookup for non-forced positions
-    // Use a modified key that includes passCount to avoid conflicts
-    HashKey posKey  = board.zobristKey() ^ HashKey(passCount * 0x9E3779B97F4A7C15ULL);
-    Value   ttValue = VALUE_NONE;
-    Value   ttEval  = VALUE_NONE;
-    bool    ttIsPv  = false;
-    Bound   ttBound = BOUND_NONE;
-    Pos     ttMove  = Pos::NONE;
-    int     ttDepth = (int)DEPTH_LOWER_BOUND;
-    bool    ttHit   = TT.probe(posKey, ttValue, ttEval, ttIsPv, ttBound, ttMove, ttDepth, ss->ply);
-
-    int vcnRefDepth = (int)DEPTH_QVCF;
-    if (ttHit && std::abs(ttValue) >= VALUE_MATE_IN_MAX_PLY)
-        vcnRefDepth = (int)DEPTH_QVCF + 100;
-    
-    if (ttHit && ttDepth >= vcnRefDepth && (!PvNode || !thisThread->isMainThread())) {
-        if (ttBound & BOUND_LOWER)
-            alpha = std::max(alpha, ttValue);
-        if (ttBound & BOUND_UPPER)
-            beta = std::min(beta, ttValue);
-        if (alpha >= beta)
-            return ttValue;
-    }
-
-    // Step 5. Static evaluation (stand pat)
-    if (ttHit) {
-        bestValue = ss->staticEval = ttEval;
-        if (bestValue == VALUE_NONE)
-            bestValue = ss->staticEval = Evaluation::evaluate<Rule>(board, alpha, beta);
-        if (ttValue != VALUE_NONE
-            && (ttBound & (ttValue > ss->staticEval ? BOUND_LOWER : BOUND_UPPER)))
-            bestValue = ttValue;
-    }
-    else {
-        bestValue = ss->staticEval = (ss - 1)->currentMove == Pos::PASS
-                                         ? -(ss - 1)->staticEval
-                                         : Evaluation::evaluate<Rule>(board, alpha, beta);
-    }
-
-    // Stand pat - if static eval is already good enough, we can stop here
-    // This represents the option to "do nothing" if position is already good
-    if (bestValue >= beta) {
-        if (!ttHit)
-            TT.store(posKey, bestValue, ss->staticEval, false, BOUND_LOWER, Pos::NONE,
-                     (int)DEPTH_NONE, ss->ply);
-        return bestValue;
-    }
-    if (PvNode && bestValue > alpha)
-        alpha = bestValue;
-
-    // Step 6. Generate defence moves
-    // Defender should try to block opponent's threats
-    // CRITICAL: Use ALL to generate all candidate points, not just VCF/VCT/VC2
-    // Because generate<VCF|VCT> only checks defender's own patterns, not opponent's!
-    // If defender has no counter-attack, generate<VCF|VCT> returns empty list,
-    // causing defender to miss blocking moves and incorrectly pass.
-    ScoredMove moveList[MAX_MOVES];
-    ScoredMove *end = generate<ALL>(board, moveList);
-
-    // Sort moves by Pattern4 (higher pattern4 first for defence priority)
-    std::sort(moveList, end, [&board, self](const ScoredMove &a, const ScoredMove &b) {
-        return board.cell(a.pos).pattern4[self] > board.cell(b.pos).pattern4[self];
-    });
-
-    // Step 7. Search defence moves
-    for (ScoredMove *sm = moveList; sm != end; ++sm) {
-        Pos move = *sm;
-
-        // Skip illegal moves
-        if (!board.isLegal(move))
-            continue;
-
-        // Skip moves that don't help defend (no defensive value)
-        // A move has defensive value if it blocks opponent's threats or creates our own threats
-        Pattern4 selfP4 = board.cell(move).pattern4[self];
-        Pattern4 oppoP4 = board.cell(move).pattern4[oppo];
-        
-        // Must either:
-        // 1. Block an opponent threat (oppoP4 is significant)
-        // 2. Create our own threat (selfP4 is significant)
-        bool hasDefensiveValue = (oppoP4 >= L_FLEX2) || (selfP4 >= L_FLEX2);
-        if (!hasDefensiveValue)
-            continue;
-
-        ss->currentMove   = move;
-        ss->moveCount     = ++moveCount;
-        ss->moveP4[BLACK] = board.cell(move).pattern4[BLACK];
-        ss->moveP4[WHITE] = board.cell(move).pattern4[WHITE];
-        if (PvNode)
-            (ss + 1)->pv[0] = Pos::NONE;
-
-        board.move<Rule>(move);
-
-        // After defence, continue VCN search (passCount doesn't increase on defence)
-        value = -vcnsearch<Rule, NT, N>(board, ss + 1, -beta, -alpha, passCount, depth);
-
-        board.undo<Rule>();
-
-        if (thisThread->threads.isTerminating())
-            return VALUE_NONE;
-
-        if (value > bestValue) {
-            bestValue = value;
-
-            if (value > alpha) {
-                bestMove = move;
-
-                if (PvNode)
-                    ss->updatePv(move);
-
-                if (value >= beta)
-                    break;
-                else
-                    alpha = value;
-            }
-        }
-    }
-
-    // Step 8. Try passing (if we still have pass quota)
-    // Passing is only beneficial if it leads to a better result than defending
-    if (passCount < MaxPass && bestValue < beta) {
+    // Step 4. No immediate A_FIVE threat - defender can choose to pass or return eval
+    // In VCN, defender can pass up to MaxPass times
+    if (passCount < MaxPass) {
+        // Try passing - make a pass move
         ss->currentMove   = Pos::PASS;
+        ss->moveCount     = 1;
         ss->moveP4[BLACK] = NONE;
         ss->moveP4[WHITE] = NONE;
         if (PvNode)
@@ -2291,42 +2160,15 @@ Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
 
         board.undo<Rule>();
 
-        if (thisThread->threads.isTerminating())
-            return VALUE_NONE;
+        if (PvNode)
+            ss->updatePv(Pos::PASS);
 
-        // Use the better result between passing and defending
-        if (value > bestValue) {
-            bestValue = value;
-            bestMove  = Pos::PASS;
-
-            if (PvNode)
-                ss->updatePv(Pos::PASS);
-
-            if (bestValue > alpha)
-                alpha = bestValue;
-        }
+        return value;
     }
-
-    // Step 9. Save TT entry
-    int ttDepthStore = (int)DEPTH_QVCF;
-    Bound bound;
-    if (bestValue >= beta)
-        bound = BOUND_LOWER;
-    else if (PvNode && bestValue > oldAlpha)
-        bound = BOUND_EXACT;
-    else
-        bound = BOUND_UPPER;
-    
-    if (std::abs(bestValue) >= VALUE_MATE_IN_MAX_PLY) {
-        ttDepthStore = (int)DEPTH_QVCF + 100;
-        if (bound == BOUND_UPPER)
-            bound = BOUND_EXACT;
+    else {
+        // Cannot pass anymore - return evaluation
+        return Evaluation::evaluate<Rule>(board, alpha, beta);
     }
-    
-    TT.store(posKey, bestValue, ss->staticEval, PvNode, bound, bestMove, ttDepthStore, ss->ply);
-
-    assert(bestValue > -VALUE_INFINITE && bestValue < VALUE_INFINITE);
-    return bestValue;
 }
 
 // Explicit template instantiations for VCN search
