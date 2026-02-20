@@ -2591,7 +2591,7 @@ Value searchVCN(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
     if (!PvNode
         && (alpha < VALUE_MATE_IN_MAX_PLY || !ttHit)
         && eval + razorMargin<Rule>(depth) < alpha) {
-        return vcnsearch<Rule, NonPV, N>(board, ss, alpha, alpha + 1, passCount, 0.0f);
+        return vcfsearch<Rule, NonPV>(board, ss, alpha, alpha + 1);
     }
 
     if (!PvNode && eval < VALUE_MATE_IN_MAX_PLY
@@ -2634,7 +2634,7 @@ Value searchVCN(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
         depth -= std::clamp((depth - ttDepth) * IIR_REDUCTION_TT, 0.0f, IIR_REDUCTION_TT_MAX);
 
     if (depth <= 0) {
-        return vcnsearch<Rule, NT, N>(board, ss, alpha, beta, passCount, depth);
+        return vcfsearch<Rule, NT>(board, ss, alpha, beta);
     }
 
     if (depth >= IID_DEPTH && !ttMove) {
