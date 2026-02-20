@@ -1155,10 +1155,10 @@ moves_loop:
                                               beta - alpha,
                                               searchData->rootDelta);
 
-            // Policy based reduction (~59 elo)
-            if (mp.hasPolicyScore())
-                r += policyReduction<Rule>(mp.curMoveScore()
-                                           * (0.1f / Evaluation::PolicyBuffer::ScoreScale));
+            // 【删除】：Policy based reduction - mp 已经没了
+            // if (mp.hasPolicyScore())
+            //     r += policyReduction<Rule>(mp.curMoveScore()
+            //                                * (0.1f / Evaluation::PolicyBuffer::ScoreScale));
 
             // Dynamic reduction based on complexity (~2 elo)
             r += complexity * complexityReduction<Rule>(trivialMove, importantMove, distract);
@@ -2516,11 +2516,22 @@ Value searchVCN(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
     else
         searchData->rootDelta = beta - alpha;
 
+    // 【修改点 1】：声明 threatMove 用于威胁窃取
+    Pos threatMove = Pos::NONE;
+
     if (!isAttacker && passCount < MaxPass && !RootNode) {
         ss->currentMove = Pos::PASS;
         board.move<Rule>(Pos::PASS);
 
         Value passValue = -searchVCN<Rule, NT, N>(board, ss + 1, -beta, -alpha, depth - 1.0f, !cutNode, passCount + 1);
+
+        // 【新增】：威胁窃取！如果防守失败，探测刚才进攻方准备走哪一步来杀我们
+        HashKey passKey = board.zobristKey() ^ HashKey((passCount + 1) * 0x9E3779B97F4A7C15ULL);
+        Value tv, te;
+        bool tpv;
+        Bound tb;
+        int td;
+        TT.probe(passKey, tv, te, tpv, tb, threatMove, td, ss->ply + 1);
 
         board.undo<Rule>();
 
@@ -2634,7 +2645,8 @@ Value searchVCN(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
         depth -= std::clamp((depth - ttDepth) * IIR_REDUCTION_TT, 0.0f, IIR_REDUCTION_TT_MAX);
 
     if (depth <= 0) {
-        return vcfsearch<Rule, NT>(board, ss, alpha, beta);
+        return oppo5 ? vcfdefend<Rule, NT>(board, ss, alpha, beta)
+                     : vcfsearch<Rule, NT>(board, ss, alpha, beta);
     }
 
     if (depth >= IID_DEPTH && !ttMove) {
@@ -2665,18 +2677,54 @@ moves_loop:
     // Indicate cutNode that will probably fail high if current eval is far above beta
     bool likelyFailHigh = !PvNode && cutNode && eval >= beta + failHighMargin(depth, oppo4);
 
-    MovePicker mp(Rule,
-                  board,
-                  MovePicker::ExtraArgs<MovePicker::MAIN> {
-                      ttMove,
-                      &searchData->mainHistory,
-                      &searchData->counterMoveHistory,
-                  });
+    // ==========================================
+    // 【修改点 2】：原生极速生成器与纯逻辑排序 (丢弃 NNUE)
+    // ==========================================
+    ScoredMove moves[MAX_MOVES];
+    ScoredMove *end = moves;
 
-    // Step 11. Loop through all legal moves until no moves remain
-    // or a beta cutoff occurs.
-    while (Pos move = mp()) {
-        assert(board.isLegal(move));
+    if (isAttacker) {
+        // 进攻方：要求速度快，允许漏掉极其偏僻的无棋型冷着
+        end = generate<VCF | VCT | VC2>(board, moves);
+
+        std::sort(moves, end, [&](ScoredMove a, ScoredMove b) {
+            if (a.pos == ttMove) return true;
+            if (b.pos == ttMove) return false;
+            Pattern4 p4a = board.cell(a.pos).pattern4[self];
+            Pattern4 p4b = board.cell(b.pos).pattern4[self];
+            return p4a > p4b; // 谁的攻击棋型大，谁先搜
+        });
+    } else {
+        // 防守方：绝不能漏防！全盘生成，并结合窃取到的威胁点
+        end = generate<ALL>(board, moves);
+
+        std::sort(moves, end, [&](ScoredMove a, ScoredMove b) {
+            if (a.pos == ttMove) return true;
+            if (b.pos == ttMove) return false;
+            // 赋予窃取到的"神仙卡位点"最高特权！
+            if (a.pos == threatMove) return true;
+            if (b.pos == threatMove) return false;
+
+            Pattern4 oppoA = board.cell(a.pos).pattern4[oppo];
+            Pattern4 selfA = board.cell(a.pos).pattern4[self];
+            Pattern4 oppoB = board.cell(b.pos).pattern4[oppo];
+            Pattern4 selfB = board.cell(b.pos).pattern4[self];
+            // 谁能破坏对方最大威胁，或者建立自己最大威胁，谁先搜
+            return std::max(oppoA, selfA) > std::max(oppoB, selfB);
+        });
+    }
+
+    // 改为对 moves 数组的 for 循环
+    for (ScoredMove *m = moves; m < end; ++m) {
+        Pos move = m->pos;
+        if (!board.isLegal(move)) continue;
+
+        // 进攻方的硬性阈值过滤
+        if (isAttacker) {
+            Pattern4 p4 = board.cell(move).pattern4[self];
+            if (N == 3 && p4 < J_FLEX2_2X) continue;
+            if (N == 2 && p4 < L_FLEX2) continue;
+        }
 
         // Skip excluded move when in Singular extension search
         if (!RootNode && move == skipMove)
@@ -2716,17 +2764,17 @@ moves_loop:
         // Step 12. Pruning at shallow depth
         // Do pruning only when we have non-losing moves, otherwise we may have a false mate.
         if (!RootNode && bestValue > VALUE_MATED_IN_MAX_PLY) {
-            // Move count pruning: skip move if movecount is above threshold
-            if (moveCount >= futilityMoveCount(depth, improvement > 0))
+            // 【修改点 3.1】：只对进攻方进行 MoveCount 剪枝，防守方绝不剪枝！
+            if (isAttacker && moveCount >= futilityMoveCount(depth, improvement > 0))
                 continue;
 
             // Skip trivial moves at lower depth
             if (trivialMove && depth < TRIVIAL_PRUN_DEPTH)
                 continue;
 
-            // Policy based pruning
-            if (mp.hasPolicyScore() && mp.curMoveScore() < policyPruningScore<Rule>(depth))
-                continue;
+            // 【删除】：Policy based pruning - mp 已经没了
+            // if (mp.hasPolicyScore() && mp.curMoveScore() < policyPruningScore<Rule>(depth))
+            //     continue;
 
             // Prun distract defence move which is likely to delay a winning
             if (oppo4 && depth < TRIVIAL_PRUN_DEPTH && ss->moveP4[oppo] < E_BLOCK4 && distract)
@@ -2820,10 +2868,10 @@ moves_loop:
                                               beta - alpha,
                                               searchData->rootDelta);
 
-            // Policy based reduction (~59 elo)
-            if (mp.hasPolicyScore())
-                r += policyReduction<Rule>(mp.curMoveScore()
-                                           * (0.1f / Evaluation::PolicyBuffer::ScoreScale));
+            // 【删除】：Policy based reduction - mp 已经没了
+            // if (mp.hasPolicyScore())
+            //     r += policyReduction<Rule>(mp.curMoveScore()
+            //                                * (0.1f / Evaluation::PolicyBuffer::ScoreScale));
 
             // Dynamic reduction based on complexity (~2 elo)
             r += complexity * complexityReduction<Rule>(trivialMove, importantMove, distract);
@@ -2840,8 +2888,8 @@ moves_loop:
             if (cutNode && !(!oppo4 && ss->isKiller(move) && ss->moveP4[self] < H_FLEX3))
                 r += NOKILLER_CUTNODE_REDUCTION;
 
-            // Increase reduction for useless defend move (~6 elo)
-            if (oppo4 && ss->moveP4[oppo] < E_BLOCK4) {
+            // 【修改】：只对进攻方进行 useless defend reduction，防守方需要保留所有可能性
+            if (isAttacker && oppo4 && ss->moveP4[oppo] < E_BLOCK4) {
                 r += (distOppo > 4 ? OPPO_USELESS_DEFEND_REDUCTION : 0);
                 r += (distSelf > 4 ? SELF_USELESS_DEFEND_REDUCTION : 0);
             }
