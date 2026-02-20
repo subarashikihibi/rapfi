@@ -222,6 +222,9 @@ void ABSearcher::searchMain(MainSearchThread &th)
 
             vcnResult = currentResult;
 
+            // 告诉GUI当前搜到了第几层，引擎是"活的"！
+            printer.printDepthCompletes(th, timectl, d);
+
             // 如果证明了必胜或必败，提前结束搜索
             if (std::abs(vcnResult) >= VALUE_MATE_IN_MAX_PLY && vcnResult != VALUE_ZERO) {
                 break;
@@ -1954,9 +1957,6 @@ Value vcnsearch(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
     if (PvNode && thisThread->selDepth <= ss->ply)
         thisThread->selDepth = ss->ply + 1;
 
-    if (thisThread->isMainThread())
-        static_cast<MainSearchThread *>(thisThread)->checkExit();
-
     // Step 2. Check for draw conditions
     if (board.movesLeft() == 0 || board.nonPassMoveCount() >= thisThread->options().maxMoves)
         return getDrawValue(board, thisThread->options(), ss->ply);
@@ -2059,7 +2059,7 @@ Value vcnsearch(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
         board.move<Rule>(move);
 
         // Call defence-side VCN search
-        value = -vcndefend<Rule, NT, N>(board, ss + 1, -beta, -alpha, passCount, depth - 1);
+        value = -vcndefend<Rule, NT, N>(board, ss + 1, -beta, -alpha, passCount, depth);
 
         board.undo<Rule>();
 
@@ -2142,8 +2142,6 @@ Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
     if (PvNode && thisThread->selDepth <= ss->ply)
         thisThread->selDepth = ss->ply + 1;
 
-    if (thisThread->isMainThread())
-        static_cast<MainSearchThread *>(thisThread)->checkExit();
     // Step 2. Check for draw
     if (board.movesLeft() == 0 || board.nonPassMoveCount() >= thisThread->options().maxMoves)
         return getDrawValue(board, thisThread->options(), ss->ply);
@@ -2168,7 +2166,7 @@ Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
         board.move<Rule>(move);
 
         // Continue VCN search after defence
-        value = -vcnsearch<Rule, NT, N>(board, ss + 1, -beta, -alpha, passCount, depth - 1);
+        value = -vcnsearch<Rule, NT, N>(board, ss + 1, -beta, -alpha, passCount, depth);
 
         board.undo<Rule>();
 
@@ -2242,7 +2240,7 @@ Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
 
         board.move<Rule>(move);
 
-        value = -vcnsearch<Rule, NT, N>(board, ss + 1, -beta, -alpha, passCount, depth - 1);
+        value = -vcnsearch<Rule, NT, N>(board, ss + 1, -beta, -alpha, passCount, depth);
 
         board.undo<Rule>();
 
@@ -2276,7 +2274,7 @@ Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
 
         board.move<Rule>(Pos::PASS);
 
-        value = -vcnsearch<Rule, NT, N>(board, ss + 1, -beta, -alpha, passCount + 1, depth - 1);
+        value = -vcnsearch<Rule, NT, N>(board, ss + 1, -beta, -alpha, passCount + 1, depth);
 
         board.undo<Rule>();
 
