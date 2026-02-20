@@ -167,97 +167,63 @@ void ABSearcher::searchMain(MainSearchThread &th)
             th.rootMoves[0].value = mated_in(0);  // Loss
             th.bestMove = th.rootMoves[0].pv[0];
             printer.printBestmoveWithoutSearch(th, th.bestMove, th.rootMoves[0].value, 0, nullptr);
+            // Reset VCN mode after search
             th.options().vcnMode = SearchOptions::VCN_NONE;
             return;
         }
 
-        // 【修复1】：必须初始化时间控制器，否则后续的checkExit会异常
-        timectl.init(opts.turnTime,
-                     opts.matchTime,
-                     opts.timeLeft,
-                     {th.board->ply(), th.board->movesLeft()});
-
-        // 【修复2】：通知GUI搜索开始了，打破"死寂"
-        printer.printSearchStarts(th, timectl);
-
-        // Initialize search stack for VCN
+        // Has VCN moves - run pure VCN mate solver
+        // Initialize search stack for VCN using StackArray
         StackArray vcnStackArray(MAX_PLY, VALUE_ZERO);
         SearchStack* vcnStack = vcnStackArray.rootStack();
 
         Value vcnResult = VALUE_NONE;
-        // 【修复3】：设置兜底着法，防止Pos::NONE导致闪退
-        Pos bestMove = th.rootMoves[0].pv[0];
+        Pos bestMove = Pos::NONE;
 
-        // 【修复4】：加入迭代加深(Iterative Deepening)
-        // 从浅到深搜索，既能最快找到最短杀棋，又能持续给GUI输出信息
-        int maxVcnDepth = (opts.vcnLevel == 2) ? 120 : 150;  // 保护上限
-
-        for (int d = 1; d <= maxVcnDepth; d++) {
-            Value currentResult = VALUE_NONE;
-
-            // Call appropriate VCN search based on rule and level
-            switch (opts.rule.rule) {
-            case Rule::FREESTYLE:
-                if (opts.vcnLevel == 3)
-                    currentResult = vcnsearch<Rule::FREESTYLE, Root, 3>(*th.board, vcnStack, -VALUE_INFINITE, VALUE_INFINITE, 0, d);
-                else
-                    currentResult = vcnsearch<Rule::FREESTYLE, Root, 2>(*th.board, vcnStack, -VALUE_INFINITE, VALUE_INFINITE, 0, d);
-                break;
-            case Rule::STANDARD:
-                if (opts.vcnLevel == 3)
-                    currentResult = vcnsearch<Rule::STANDARD, Root, 3>(*th.board, vcnStack, -VALUE_INFINITE, VALUE_INFINITE, 0, d);
-                else
-                    currentResult = vcnsearch<Rule::STANDARD, Root, 2>(*th.board, vcnStack, -VALUE_INFINITE, VALUE_INFINITE, 0, d);
-                break;
-            case Rule::RENJU:
-                if (opts.vcnLevel == 3)
-                    currentResult = vcnsearch<Rule::RENJU, Root, 3>(*th.board, vcnStack, -VALUE_INFINITE, VALUE_INFINITE, 0, d);
-                else
-                    currentResult = vcnsearch<Rule::RENJU, Root, 2>(*th.board, vcnStack, -VALUE_INFINITE, VALUE_INFINITE, 0, d);
-                break;
-            }
-
-            // 如果收到停止指令，立即跳出循环
-            if (th.threads.isTerminating()) break;
-
-            vcnResult = currentResult;
-
-            // 告诉GUI当前搜到了第几层，引擎是"活的"！
-            printer.printDepthCompletes(th, timectl, d);
-
-            // 如果证明了必胜或必败，提前结束搜索
-            if (std::abs(vcnResult) >= VALUE_MATE_IN_MAX_PLY && vcnResult != VALUE_ZERO) {
-                break;
-            }
+        // Call appropriate VCN search based on rule and level
+        switch (opts.rule.rule) {
+        case Rule::FREESTYLE:
+            if (opts.vcnLevel == 3)
+                vcnResult = vcnsearch<Rule::FREESTYLE, Root, 3>(*th.board, vcnStack, -VALUE_INFINITE, VALUE_INFINITE, 0, 0);
+            else
+                vcnResult = vcnsearch<Rule::FREESTYLE, Root, 2>(*th.board, vcnStack, -VALUE_INFINITE, VALUE_INFINITE, 0, 0);
+            break;
+        case Rule::STANDARD:
+            if (opts.vcnLevel == 3)
+                vcnResult = vcnsearch<Rule::STANDARD, Root, 3>(*th.board, vcnStack, -VALUE_INFINITE, VALUE_INFINITE, 0, 0);
+            else
+                vcnResult = vcnsearch<Rule::STANDARD, Root, 2>(*th.board, vcnStack, -VALUE_INFINITE, VALUE_INFINITE, 0, 0);
+            break;
+        case Rule::RENJU:
+            if (opts.vcnLevel == 3)
+                vcnResult = vcnsearch<Rule::RENJU, Root, 3>(*th.board, vcnStack, -VALUE_INFINITE, VALUE_INFINITE, 0, 0);
+            else
+                vcnResult = vcnsearch<Rule::RENJU, Root, 2>(*th.board, vcnStack, -VALUE_INFINITE, VALUE_INFINITE, 0, 0);
+            break;
         }
 
-        // 【修复5】：如果是因为点击"停止"而退出的，安全撤离！
-        if (th.threads.isTerminating()) {
-            th.options().vcnMode = SearchOptions::VCN_NONE;
-            return;  // 优雅退出，不要去执行后面的printBestmove，防止崩溃
-        }
-
-        // 从TT中捞出最好的着法
+        // Retrieve best move from TT (passCount = 0)
         Value ttValue, ttEval;
         bool ttIsPv;
         Bound ttBound;
         int ttDepth;
-        Pos ttMove = Pos::NONE;
-        HashKey posKey = th.board->zobristKey()
-                       ^ HashKey(0x61C8864680B583EBULL)
+        HashKey posKey = th.board->zobristKey() 
+                       ^ HashKey(0x61C8864680B583EBULL)  // VCN barrier
                        ^ HashKey(opts.vcnLevel * 0x3141592653589793ULL);
-
-        if (TT.probe(posKey, ttValue, ttEval, ttIsPv, ttBound, ttMove, ttDepth, 0)) {
-            if (ttMove != Pos::NONE) bestMove = ttMove;
+        if (TT.probe(posKey, ttValue, ttEval, ttIsPv, ttBound, bestMove, ttDepth, 0)) {
+            if (bestMove == Pos::NONE) {
+                // If no best move in TT, use first root move as fallback
+                bestMove = th.rootMoves[0].pv[0];
+            }
+        } else {
+            bestMove = th.rootMoves[0].pv[0];
         }
 
         th.bestMove = bestMove;
         th.rootMoves[0].value = vcnResult;
-
-        // 正常输出结果结束
-        printer.printSearchEnds(th, timectl, maxVcnDepth, th);
         printer.printBestmoveWithoutSearch(th, bestMove, vcnResult, 0, nullptr);
-
+        
+        // Reset VCN mode after search to prevent contaminating normal search
         th.options().vcnMode = SearchOptions::VCN_NONE;
         return;
     }
@@ -1899,9 +1865,9 @@ constexpr int maxPassesForVCN(int n) { return 6 - n; }
 constexpr Pattern4 minAttackPattern4ForVCN(int n)
 {
     switch (n) {
-    case 4: return E_BLOCK4;       // VC4 保持冲四
-    case 3: return I_BLOCK3_PLUS;  // 【修改】VC3 降级为包含眠三的组合做杀点
-    case 2: return NONE;           // 【修改】VC2 降级为无下限（任何点都可以作为攻击点）
+    case 4: return E_BLOCK4;  // VCF: need at least block4
+    case 3: return H_FLEX3;   // VC3: need at least flex3
+    case 2: return L_FLEX2;   // VC2: need at least flex2
     default: return A_FIVE;
     }
 }
@@ -1972,11 +1938,6 @@ Value vcnsearch(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
     beta  = std::min(mate_in(ss->ply + 1), beta);
     if (alpha >= beta)
         return alpha;
-
-    // 【新增】：到达迭代深度限制，未能证明必胜，返回0(未知)
-    if (depth <= 0) {
-        return VALUE_ZERO;
-    }
 
     // Step 5. Transposition table lookup
     // Use VCN-exclusive hash key to prevent polluting main search TT
@@ -2176,11 +2137,6 @@ Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
         return value;
     }
 
-    // 【新增】：到达迭代深度限制，未能证明必胜，返回0(未知)
-    if (depth <= 0) {
-        return VALUE_ZERO;
-    }
-
     // Step 4. Transposition table lookup
     // Use VCN-exclusive hash key to prevent polluting main search TT
     HashKey posKey  = board.zobristKey()
@@ -2296,18 +2252,7 @@ Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, int pass
     // Step 8. Save TT entry
     // If no defence found, defender loses (gets mated)
     if (bestValue == -VALUE_INFINITE) {
-        // 如果防守方不能 Pass 了 (passCount >= MaxPass)
-        // 且攻击方上一步没有形成冲四 (否则早就进了 oppo5 的强迫防守分支)
-        // 这说明攻击方走了一步“慢棋”，攻击的连续性被打破了！
-        // 判定：攻击方失败！(防守方返回赢棋的分数)
-        if (passCount >= MaxPass) {
-            bestValue = -mated_in(ss->ply); 
-        } 
-        // 理论上走不到下面这个分支，因为只要 passCount < MaxPass，
-        // 前面的 Pass 逻辑必然会尝试 Pass 并更新 bestValue。
-        else {
-            bestValue = mated_in(ss->ply); 
-        }
+        bestValue = mated_in(ss->ply);
     }
     
     Bound bound;
