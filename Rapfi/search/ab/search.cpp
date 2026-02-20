@@ -259,31 +259,70 @@ void ABSearcher::search(SearchThread &th)
             return;
         }
 
-        SearchStack *ss   = stackArray.rootStack();
-        ss->vcnPassCount  = 0;
-        ss->moveCount     = 0;
-        ss->currentMove   = Pos::NONE;
+        SearchStack *ss = stackArray.rootStack();
+        Value        vcnValue = VALUE_NONE;
 
-        Value vcnValue = VALUE_NONE;
-        switch (options.rule.rule) {
-        case Rule::FREESTYLE:
-            vcnValue = vcnsearch<Rule::FREESTYLE, Root>(*th.board, ss, -VALUE_INFINITE, VALUE_INFINITE, Depth(20), passLimit);
-            break;
-        case Rule::STANDARD:
-            vcnValue = vcnsearch<Rule::STANDARD, Root>(*th.board, ss, -VALUE_INFINITE, VALUE_INFINITE, Depth(20), passLimit);
-            break;
-        case Rule::RENJU:
-            vcnValue = vcnsearch<Rule::RENJU, Root>(*th.board, ss, -VALUE_INFINITE, VALUE_INFINITE, Depth(20), passLimit);
-            break;
-        default:
-            break;
+        ABSearcher *searcher = static_cast<ABSearcher *>(th.threads.searcher());
+
+        int maxVcnDepth = std::min(options.maxDepth, MAX_PLY - 1);
+
+        for (int d = 1; d <= maxVcnDepth && !th.threads.isTerminating(); ++d) {
+            ss->vcnPassCount = 0;
+            ss->moveCount    = 0;
+            ss->currentMove  = Pos::NONE;
+
+            Value currentVcnValue = VALUE_NONE;
+
+            switch (options.rule.rule) {
+            case Rule::FREESTYLE:
+                currentVcnValue = vcnsearch<Rule::FREESTYLE, Root>(*th.board, ss, -VALUE_INFINITE, VALUE_INFINITE, Depth(d), passLimit);
+                break;
+            case Rule::STANDARD:
+                currentVcnValue = vcnsearch<Rule::STANDARD, Root>(*th.board, ss, -VALUE_INFINITE, VALUE_INFINITE, Depth(d), passLimit);
+                break;
+            case Rule::RENJU:
+                currentVcnValue = vcnsearch<Rule::RENJU, Root>(*th.board, ss, -VALUE_INFINITE, VALUE_INFINITE, Depth(d), passLimit);
+                break;
+            default:
+                break;
+            }
+
+            if (th.threads.isTerminating()) {
+                break;
+            }
+
+            vcnValue = currentVcnValue;
+            th.rootMoves[0].value = vcnValue;
+
+            if (vcnValue >= VALUE_MATE_IN_MAX_PLY) {
+                th.rootMoves[0].pv = std::vector<Pos>(ss->pv, ss->pv + MAX_PLY);
+                while (!th.rootMoves[0].pv.empty() && th.rootMoves[0].pv.back() == Pos::NONE)
+                    th.rootMoves[0].pv.pop_back();
+            }
+            else {
+                th.rootMoves[0].pv = {Pos::NONE};
+            }
+
+            sd.completedDepth = d;
+
+            if (mainThread) {
+                searcher->printer.printDepthCompletes(*mainThread, searcher->timectl, d);
+            }
+
+            if (vcnValue >= VALUE_MATE_IN_MAX_PLY) {
+                break;
+            }
+
+            if (options.timeLimit && mainThread) {
+                TimeControl::IterParams iterParams {d, d, vcnValue, vcnValue, 1.0f, 0.0f};
+                float                   timeReduction = 1.0f;
+                if (searcher->timectl.checkStop(iterParams, timeReduction)) {
+                    th.threads.stopThinking();
+                }
+            }
         }
 
         if (vcnValue >= VALUE_MATE_IN_MAX_PLY) {
-            th.rootMoves[0].value = vcnValue;
-            th.rootMoves[0].pv    = std::vector<Pos>(ss->pv, ss->pv + MAX_PLY);
-            while (!th.rootMoves[0].pv.empty() && th.rootMoves[0].pv.back() == Pos::NONE)
-                th.rootMoves[0].pv.pop_back();
             if (mainThread)
                 mainThread->bestMove = th.rootMoves[0].pv.empty() ? Pos::NONE : th.rootMoves[0].pv[0];
         }
@@ -293,7 +332,6 @@ void ABSearcher::search(SearchThread &th)
                 mainThread->bestMove = th.rootMoves.empty() ? Pos::NONE : th.rootMoves[0].pv[0];
         }
 
-        sd.completedDepth = 20;
         return;
     }
 
