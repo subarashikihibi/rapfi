@@ -148,6 +148,16 @@ struct SearchOptions
     } balanceMode = BALANCE_NONE;
     /// Value bias for balance move (default is 0)
     int balanceBias = 0;
+    /// VCN mode: strict VCN search where attacker wins if defender cannot pass more than (6-N) times
+    /// VCN mode disabled by default (vcnN = 0)
+    enum VCNMode {
+        VCN_NONE,
+        VCN_BLACK,
+        VCN_WHITE,
+    } vcnMode = VCN_NONE;
+    /// N value for VCN (2-6), where pass_limit = 6 - N
+    /// vc2 means defender can pass at most 4 times before losing
+    int vcnN = 0;
     /// Max game ply for the search tree to grow
     int maxMoves = INT32_MAX;
     /// The result returned after reaching the max game ply

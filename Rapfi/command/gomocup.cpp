@@ -171,6 +171,10 @@ void think(Board                             &board,
             thinking = false;
         }
 
+        // Reset VCN mode after search
+        options.vcnMode = Search::SearchOptions::VCN_NONE;
+        options.vcnN    = 0;
+
         // Subtract used match time
         Time usedTime = now() - startTime;
         if (options.timeLimit && options.matchTime > 0)
@@ -731,6 +735,14 @@ void nbest()
 {
     std::cin >> options.multiPV;
     think(*board, std::max<uint16_t>(options.multiPV, 1));
+}
+
+void vcnSearch(Search::SearchOptions::VCNMode mode, int n)
+{
+    options.vcnMode = mode;
+    options.vcnN    = n;
+
+    think(*board, 1);
 }
 
 void showForbid()
@@ -1327,6 +1339,10 @@ bool runProtocol()
     else if (cmd == "YXBLOCKUNDO")         CheckBoardOK([] { getBlock(true); });
     else if (cmd == "YXBLOCKRESET")        CheckBoardOK([] { options.blockMoves.clear(); });
     else if (cmd == "YXNBEST")             CheckBoardOK(nbest);
+    else if (cmd == "YXVC2BLACK")          CheckBoardOK([] { vcnSearch(Search::SearchOptions::VCN_BLACK, 2); });
+    else if (cmd == "YXVC2WHITE")          CheckBoardOK([] { vcnSearch(Search::SearchOptions::VCN_WHITE, 2); });
+    else if (cmd == "YXVCNBLACK")          CheckBoardOK([] { int n; std::cin >> n; vcnSearch(Search::SearchOptions::VCN_BLACK, n); });
+    else if (cmd == "YXVCNWHITE")          CheckBoardOK([] { int n; std::cin >> n; vcnSearch(Search::SearchOptions::VCN_WHITE, n); });
     else if (cmd == "YXSHOWFORBID")        CheckBoardOK(showForbid);
     else if (cmd == "YXBALANCEONE")        CheckBoardOK([] { balance(Search::SearchOptions::BALANCE_ONE); });
     else if (cmd == "YXBALANCETWO")        CheckBoardOK([] { balance(Search::SearchOptions::BALANCE_TWO); });

@@ -43,6 +43,7 @@ struct SearchStack
     Pos        killers[2];
     Pattern4   moveP4[SIDE_NB];
     int16_t    numNullMoves;
+    int16_t    vcnPassCount;  /// VCN: cumulative pass count for defender
     bool       ttPv;
     bool       dbChildWritten;
 

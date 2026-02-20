@@ -63,6 +63,11 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
 template <Rule Rule, NodeType NT>
 Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth = 0.0f);
 
+template <Rule Rule, NodeType NT>
+Value vcnsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth, int passLimit);
+template <Rule Rule, NodeType NT>
+Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth, int passLimit);
+
 }  // namespace
 
 void ABSearchData::clearData(SearchThread &th)
@@ -242,6 +247,55 @@ void ABSearcher::search(SearchThread &th)
     float             timeReduction = 1.0f, totalBestMoveChanges = 0.0f;
     int               firstMateDepth = 0, firstSingularDepth = 0;
     MainSearchThread *mainThread = (&th == th.threads.main() ? th.threads.main() : nullptr);
+
+    if (options.vcnMode != SearchOptions::VCN_NONE && options.vcnN >= 2 && options.vcnN <= 6) {
+        Color vcnAttacker = (options.vcnMode == SearchOptions::VCN_BLACK) ? BLACK : WHITE;
+        int   passLimit   = 6 - options.vcnN;
+
+        if (th.board->sideToMove() != vcnAttacker) {
+            th.rootMoves[0].value = -VALUE_MATE;
+            if (mainThread)
+                mainThread->bestMove = th.rootMoves.empty() ? Pos::NONE : th.rootMoves[0].pv[0];
+            return;
+        }
+
+        SearchStack *ss   = stackArray.rootStack();
+        ss->vcnPassCount  = 0;
+        ss->moveCount     = 0;
+        ss->currentMove   = Pos::NONE;
+
+        Value vcnValue = VALUE_NONE;
+        switch (options.rule.rule) {
+        case Rule::FREESTYLE:
+            vcnValue = vcnsearch<Rule::FREESTYLE, Root>(*th.board, ss, -VALUE_INFINITE, VALUE_INFINITE, Depth(20), passLimit);
+            break;
+        case Rule::STANDARD:
+            vcnValue = vcnsearch<Rule::STANDARD, Root>(*th.board, ss, -VALUE_INFINITE, VALUE_INFINITE, Depth(20), passLimit);
+            break;
+        case Rule::RENJU:
+            vcnValue = vcnsearch<Rule::RENJU, Root>(*th.board, ss, -VALUE_INFINITE, VALUE_INFINITE, Depth(20), passLimit);
+            break;
+        default:
+            break;
+        }
+
+        if (vcnValue >= VALUE_MATE_IN_MAX_PLY) {
+            th.rootMoves[0].value = vcnValue;
+            th.rootMoves[0].pv    = std::vector<Pos>(ss->pv, ss->pv + MAX_PLY);
+            while (!th.rootMoves[0].pv.empty() && th.rootMoves[0].pv.back() == Pos::NONE)
+                th.rootMoves[0].pv.pop_back();
+            if (mainThread)
+                mainThread->bestMove = th.rootMoves[0].pv.empty() ? Pos::NONE : th.rootMoves[0].pv[0];
+        }
+        else {
+            th.rootMoves[0].value = -VALUE_MATE;
+            if (mainThread)
+                mainThread->bestMove = th.rootMoves.empty() ? Pos::NONE : th.rootMoves[0].pv[0];
+        }
+
+        sd.completedDepth = 20;
+        return;
+    }
 
     // Init search depth range
     int maxDepth   = std::min(options.maxDepth, std::clamp(Config::MaxSearchDepth, 2, MAX_DEPTH));
@@ -1735,6 +1789,412 @@ Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
     assert(value > -VALUE_INFINITE && value < VALUE_INFINITE
            || thisThread->threads.isTerminating());
     return value;
+}
+
+/// VCN search: Attack-side search (OR node)
+/// The attacker tries to find a winning move. Uses Policy-based move selection
+/// with Top-K candidates. Returns mate score if VCN win is found.
+template <Rule Rule, NodeType NT>
+Value vcnsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth, int passLimit)
+{
+    constexpr bool PvNode   = NT == PV || NT == Root;
+    constexpr bool RootNode = NT == Root;
+
+    assert(-VALUE_INFINITE <= alpha && alpha < beta && beta <= VALUE_INFINITE);
+    assert(0 <= ss->ply && ss->ply < MAX_PLY);
+    assert(passLimit >= 0);
+
+    SearchThread *thisThread = board.thisThread();
+    ABSearchData *searchData = thisThread->searchDataAs<ABSearchData>();
+    thisThread->numNodes.fetch_add(1, std::memory_order_relaxed);
+
+    Color    self = board.sideToMove(), oppo = ~self;
+    uint16_t oppo5 = board.p4Count(oppo, A_FIVE);
+    int      moveCount = 0;
+    Value    bestValue = -VALUE_INFINITE, value;
+    Value    oldAlpha  = alpha;
+    Pos      bestMove  = Pos::NONE;
+
+    if (PvNode && thisThread->selDepth <= ss->ply)
+        thisThread->selDepth = ss->ply + 1;
+
+    if (thisThread->isMainThread())
+        static_cast<MainSearchThread *>(thisThread)->checkExit();
+
+    if (board.movesLeft() == 0 || board.nonPassMoveCount() >= thisThread->options().maxMoves)
+        return getDrawValue(board, thisThread->options(), ss->ply);
+
+    if (ss->ply >= MAX_PLY)
+        return Evaluation::evaluate<Rule>(board, alpha, beta);
+
+    if ((value = quickWinCheck<Rule>(board, ss->ply, beta)) != VALUE_ZERO) {
+        if (board.nonPassMoveCount() + mate_step(value, ss->ply) > thisThread->options().maxMoves)
+            value = getDrawValue(board, thisThread->options(), ss->ply);
+        return value;
+    }
+
+    if (depth <= 0.0f) {
+        return oppo5 ? vcfdefend<Rule, NT>(board, ss, alpha, beta)
+                     : vcfsearch<Rule, NT>(board, ss, alpha, beta);
+    }
+
+    alpha = std::max(mated_in(ss->ply), alpha);
+    beta  = std::min(mate_in(ss->ply + 1), beta);
+    if (alpha >= beta)
+        return alpha;
+
+    HashKey posKey = board.zobristKey()
+                     ^ Hash::LCHash(ss->vcnPassCount)
+                     ^ 0x62C79A55E1D3F8BULL;
+    Value   ttValue = VALUE_NONE;
+    Value   ttEval  = VALUE_NONE;
+    bool    ttIsPv  = false;
+    Bound   ttBound = BOUND_NONE;
+    Pos     ttMove  = Pos::NONE;
+    int     ttDepth = 0;
+    bool    ttHit   = TT.probe(posKey, ttValue, ttEval, ttIsPv, ttBound, ttMove, ttDepth, ss->ply);
+
+    if (ttHit && ttDepth >= depth) {
+        if (ttBound & BOUND_LOWER)
+            alpha = std::max(alpha, ttValue);
+        if (ttBound & BOUND_UPPER)
+            beta = std::min(beta, ttValue);
+        if (alpha >= beta)
+            return ttValue;
+    }
+
+    if (ttHit) {
+        bestValue = ss->staticEval = ttEval;
+        if (bestValue == VALUE_NONE)
+            bestValue = ss->staticEval = Evaluation::evaluate<Rule>(board, alpha, beta);
+        if (ttValue != VALUE_NONE
+            && (ttBound & (ttValue > ss->staticEval ? BOUND_LOWER : BOUND_UPPER)))
+            bestValue = ttValue;
+    }
+    else {
+        bestValue = ss->staticEval = Evaluation::evaluate<Rule>(board, alpha, beta);
+    }
+
+    if (bestValue >= beta) {
+        if (!ttHit)
+            TT.store(posKey, bestValue, ss->staticEval, false, BOUND_LOWER, Pos::NONE, (int)DEPTH_NONE, ss->ply);
+        return bestValue;
+    }
+
+    MovePicker mp(Rule, board, MovePicker::ExtraArgs<MovePicker::MAIN> {ttMove, &searchData->mainHistory, &searchData->counterMoveHistory});
+
+    constexpr int VCN_TOP_K = 10;
+    int           candidatesChecked = 0;
+
+    while (Pos move = mp()) {
+        if (Rule == Rule::RENJU && self == BLACK && board.checkForbiddenPoint(move))
+            continue;
+
+        if (!RootNode && candidatesChecked >= VCN_TOP_K && moveCount >= VCN_TOP_K)
+            break;
+
+        assert(board.isLegal(move));
+
+        ss->currentMove   = move;
+        ss->moveCount     = ++moveCount;
+        ss->moveP4[BLACK] = board.cell(move).pattern4[BLACK];
+        ss->moveP4[WHITE] = board.cell(move).pattern4[WHITE];
+        candidatesChecked++;
+
+        if (PvNode)
+            (ss + 1)->pv[0] = Pos::NONE;
+
+        board.move<Rule>(move);
+
+        (ss + 1)->vcnPassCount = ss->vcnPassCount;
+        value = -vcndefend<Rule, NT>(board, ss + 1, -beta, -alpha, depth - 1, passLimit);
+
+        board.undo<Rule>();
+
+        if (thisThread->threads.isTerminating())
+            return VALUE_NONE;
+
+        if (value > bestValue) {
+            bestValue = value;
+
+            if (value > alpha) {
+                bestMove = move;
+
+                if (PvNode)
+                    ss->updatePv(move);
+
+                if (value >= beta) {
+                    break;
+                }
+                else {
+                    alpha = value;
+                }
+            }
+        }
+    }
+
+    if (!moveCount) {
+        return -VALUE_MATE + ss->ply;
+    }
+
+    TT.store(posKey, bestValue, ss->staticEval, PvNode, bestValue >= beta ? BOUND_LOWER : (PvNode && bestValue > oldAlpha ? BOUND_EXACT : BOUND_UPPER), bestMove, (int)depth, ss->ply);
+
+    assert(bestValue > -VALUE_INFINITE && bestValue < VALUE_INFINITE);
+    return bestValue;
+}
+
+/// VCN defend: Defense-side search (AND node)
+/// The defender must try all defenses including PASS.
+/// If pass count exceeds passLimit, defender wins (attacker fails).
+template <Rule Rule, NodeType NT>
+Value vcndefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth, int passLimit)
+{
+    constexpr bool PvNode = NT == PV || NT == Root;
+
+    assert(-VALUE_INFINITE <= alpha && alpha < beta && beta <= VALUE_INFINITE);
+    assert(0 <= ss->ply && ss->ply < MAX_PLY);
+    assert(passLimit >= 0);
+
+    SearchThread *thisThread = board.thisThread();
+    thisThread->numNodes.fetch_add(1, std::memory_order_relaxed);
+
+    Color    self = board.sideToMove(), oppo = ~self;
+    uint16_t oppo5 = board.p4Count(oppo, A_FIVE);
+    uint16_t oppo4 = oppo5 + board.p4Count(oppo, B_FLEX4);
+    Value    value;
+
+    if (PvNode && thisThread->selDepth <= ss->ply)
+        thisThread->selDepth = ss->ply + 1;
+
+    if (board.movesLeft() == 0 || board.nonPassMoveCount() >= thisThread->options().maxMoves)
+        return getDrawValue(board, thisThread->options(), ss->ply);
+
+    if (ss->ply >= MAX_PLY)
+        return Evaluation::evaluate<Rule>(board, alpha, beta);
+
+    if ((value = quickWinCheck<Rule>(board, ss->ply, beta)) != VALUE_ZERO) {
+        return value;
+    }
+
+    if (ss->vcnPassCount >= passLimit) {
+        return Evaluation::evaluate<Rule>(board, alpha, beta);
+    }
+
+    if (depth <= 0.0f) {
+        return oppo5 ? vcfdefend<Rule, NT>(board, ss, alpha, beta)
+                     : vcfsearch<Rule, NT>(board, ss, alpha, beta);
+    }
+
+    alpha = std::max(mated_in(ss->ply), alpha);
+    beta  = std::min(mate_in(ss->ply + 1), beta);
+    if (alpha >= beta)
+        return alpha;
+
+    Value oldAlpha = alpha;
+
+    HashKey posKey = board.zobristKey()
+                     ^ Hash::LCHash(ss->vcnPassCount)
+                     ^ 0x62C79A55E1D3F8BULL;
+    Value   ttValue = VALUE_NONE;
+    Value   ttEval  = VALUE_NONE;
+    bool    ttIsPv  = false;
+    Bound   ttBound = BOUND_NONE;
+    Pos     ttMove  = Pos::NONE;
+    int     ttDepth = 0;
+    bool    ttHit   = TT.probe(posKey, ttValue, ttEval, ttIsPv, ttBound, ttMove, ttDepth, ss->ply);
+
+    if (ttHit && ttDepth >= depth) {
+        if (ttBound & BOUND_LOWER)
+            alpha = std::max(alpha, ttValue);
+        if (ttBound & BOUND_UPPER)
+            beta = std::min(beta, ttValue);
+        if (alpha >= beta)
+            return ttValue;
+    }
+
+    if (ttHit) {
+        ss->staticEval = ttEval;
+        if (ss->staticEval == VALUE_NONE)
+            ss->staticEval = Evaluation::evaluate<Rule>(board, alpha, beta);
+    }
+    else {
+        ss->staticEval = Evaluation::evaluate<Rule>(board, alpha, beta);
+    }
+
+    Value bestDefenseValue = -VALUE_INFINITE;
+
+    if (ss->vcnPassCount < passLimit && board.getLastMove() != Pos::PASS && !oppo5 && !oppo4) {
+        ss->currentMove   = Pos::PASS;
+        ss->moveCount     = 1;
+        ss->moveP4[BLACK] = NONE;
+        ss->moveP4[WHITE] = NONE;
+
+        if (PvNode)
+            (ss + 1)->pv[0] = Pos::NONE;
+
+        (ss + 1)->vcnPassCount = ss->vcnPassCount + 1;
+
+        board.move<Rule>(Pos::PASS);
+        value = -vcnsearch<Rule, NT>(board, ss + 1, -beta, -alpha, depth - 1, passLimit);
+        board.undo<Rule>();
+
+        if (thisThread->threads.isTerminating())
+            return VALUE_NONE;
+
+        if (value >= beta) {
+            if (PvNode)
+                ss->updatePv(Pos::PASS);
+            TT.store(posKey, value, ss->staticEval, PvNode, BOUND_LOWER, Pos::PASS, (int)depth, ss->ply);
+            return value;
+        }
+
+        if (value > bestDefenseValue) {
+            bestDefenseValue = value;
+            if (value > alpha)
+                alpha = value;
+            if (PvNode)
+                ss->updatePv(Pos::PASS);
+        }
+    }
+
+    if (oppo5) {
+        Pos move = board.stateInfo().lastPattern4(oppo, A_FIVE);
+        assert(board.cell(move).pattern4[oppo] == A_FIVE);
+
+        if (Rule == Rule::RENJU && self == BLACK && board.checkForbiddenPoint(move)) {
+            TT.store(posKey, mated_in(ss->ply + 2), ss->staticEval, PvNode, BOUND_UPPER, Pos::NONE, (int)depth, ss->ply);
+            return mated_in(ss->ply + 2);
+        }
+
+        ss->currentMove   = move;
+        ss->moveCount     = 1;
+        ss->moveP4[BLACK] = board.cell(move).pattern4[BLACK];
+        ss->moveP4[WHITE] = board.cell(move).pattern4[WHITE];
+
+        if (PvNode)
+            (ss + 1)->pv[0] = Pos::NONE;
+
+        (ss + 1)->vcnPassCount = ss->vcnPassCount;
+
+        board.move<Rule>(move);
+        value = -vcnsearch<Rule, NT>(board, ss + 1, -beta, -alpha, depth - 1, passLimit);
+        board.undo<Rule>();
+
+        if (thisThread->threads.isTerminating())
+            return VALUE_NONE;
+
+        if (value >= beta) {
+            if (PvNode)
+                ss->updatePv(move);
+            TT.store(posKey, value, ss->staticEval, PvNode, BOUND_LOWER, move, (int)depth, ss->ply);
+            return value;
+        }
+
+        if (value > bestDefenseValue) {
+            bestDefenseValue = value;
+            if (value > alpha)
+                alpha = value;
+            if (PvNode)
+                ss->updatePv(move);
+        }
+    }
+    else if (oppo4) {
+        ABSearchData *searchData = thisThread->searchDataAs<ABSearchData>();
+        MovePicker mp(Rule, board, MovePicker::ExtraArgs<MovePicker::MAIN> {Pos::NONE, &searchData->mainHistory, &searchData->counterMoveHistory});
+
+        while (Pos move = mp()) {
+            if (Rule == Rule::RENJU && self == BLACK && board.checkForbiddenPoint(move))
+                continue;
+
+            Pattern4 selfP4  = board.cell(move).pattern4[self];
+            Pattern4 oppoP4  = board.cell(move).pattern4[oppo];
+
+            if (selfP4 < E_BLOCK4 && oppoP4 < E_BLOCK4)
+                continue;
+
+            ss->currentMove   = move;
+            ss->moveP4[BLACK] = board.cell(move).pattern4[BLACK];
+            ss->moveP4[WHITE] = board.cell(move).pattern4[WHITE];
+
+            if (PvNode)
+                (ss + 1)->pv[0] = Pos::NONE;
+
+            (ss + 1)->vcnPassCount = ss->vcnPassCount;
+
+            board.move<Rule>(move);
+            value = -vcnsearch<Rule, NT>(board, ss + 1, -beta, -alpha, depth - 1, passLimit);
+            board.undo<Rule>();
+
+            if (thisThread->threads.isTerminating())
+                return VALUE_NONE;
+
+            if (value >= beta) {
+                if (PvNode)
+                    ss->updatePv(move);
+                TT.store(posKey, value, ss->staticEval, PvNode, BOUND_LOWER, move, (int)depth, ss->ply);
+                return value;
+            }
+
+            if (value > bestDefenseValue) {
+                bestDefenseValue = value;
+                if (value > alpha)
+                    alpha = value;
+                if (PvNode)
+                    ss->updatePv(move);
+            }
+        }
+    }
+    else {
+        ABSearchData *searchData = thisThread->searchDataAs<ABSearchData>();
+        MovePicker mp(Rule, board, MovePicker::ExtraArgs<MovePicker::MAIN> {Pos::NONE, &searchData->mainHistory, &searchData->counterMoveHistory});
+
+        while (Pos move = mp()) {
+            if (Rule == Rule::RENJU && self == BLACK && board.checkForbiddenPoint(move))
+                continue;
+
+            ss->currentMove   = move;
+            ss->moveP4[BLACK] = board.cell(move).pattern4[BLACK];
+            ss->moveP4[WHITE] = board.cell(move).pattern4[WHITE];
+
+            if (PvNode)
+                (ss + 1)->pv[0] = Pos::NONE;
+
+            (ss + 1)->vcnPassCount = ss->vcnPassCount;
+
+            board.move<Rule>(move);
+            value = -vcnsearch<Rule, NT>(board, ss + 1, -beta, -alpha, depth - 1, passLimit);
+            board.undo<Rule>();
+
+            if (thisThread->threads.isTerminating())
+                return VALUE_NONE;
+
+            if (value >= beta) {
+                if (PvNode)
+                    ss->updatePv(move);
+                TT.store(posKey, value, ss->staticEval, PvNode, BOUND_LOWER, move, (int)depth, ss->ply);
+                return value;
+            }
+
+            if (value > bestDefenseValue) {
+                bestDefenseValue = value;
+                if (value > alpha)
+                    alpha = value;
+                if (PvNode)
+                    ss->updatePv(move);
+            }
+        }
+    }
+
+    if (bestDefenseValue == -VALUE_INFINITE) {
+        TT.store(posKey, mated_in(ss->ply), ss->staticEval, PvNode, BOUND_UPPER, Pos::NONE, (int)depth, ss->ply);
+        return mated_in(ss->ply);
+    }
+
+    Bound bound = bestDefenseValue >= beta ? BOUND_LOWER
+                : (PvNode && bestDefenseValue > oldAlpha ? BOUND_EXACT : BOUND_UPPER);
+
+    TT.store(posKey, bestDefenseValue, ss->staticEval, PvNode, bound, Pos::NONE, (int)depth, ss->ply);
+    return bestDefenseValue;
 }
 
 }  // namespace
