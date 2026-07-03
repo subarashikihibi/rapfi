@@ -21,15 +21,13 @@
 #include "../config.h"
 #include "../game/board.h"
 #include "../game/scopedmove.h"
+#include "parallelwalk.h"
 
 #include <algorithm>
 #include <functional>
 #include <map>
 #include <mutex>
 #include <set>
-#ifdef MULTI_THREADING
-    #include <thread>
-#endif
 
 namespace {
 
@@ -177,21 +175,14 @@ void recursiveDeleteChildren(DeleteChildrenContext                              
     if constexpr (ParentDeleted)
         thisKey = constructDBKey(board, rule);
 
-    // Find all potential children of this board position
+    // Find all potential children of this board position, spread over subtrees
     std::vector<Pos> toDeletePos;
     toDeletePos.reserve(board.movesLeft());
     FOR_EVERY_EMPTY_POS(&board, pos)
     {
         toDeletePos.push_back(pos);
     }
-
-    // Do permutation based on thread id
-    if (threadId > 0) {
-        for (size_t i = 0; i < toDeletePos.size(); i += (threadId + 1) / 2) {
-            size_t swapIndex = (i * (threadId + 1)) % toDeletePos.size();
-            std::swap(toDeletePos[i], toDeletePos[swapIndex]);
-        }
-    }
+    permuteForThread(toDeletePos, threadId);
 
     // Delete all children
     DBKey    key;
@@ -722,25 +713,9 @@ void DBClient::delChildren(const Board                       &board,
     sync();  // clear all cached records first
 
     DeleteChildrenContext ctx;
-#if defined(MULTI_THREADING)
-    const size_t             numDeleteThreads = std::thread::hardware_concurrency();
-    std::vector<std::thread> threads;
-    threads.reserve(numDeleteThreads);
-
-    for (int i = 0; i < numDeleteThreads; i++) {
-        threads.emplace_back(
-            [this, rule, &deleteFilter, &ctx, id = i](std::unique_ptr<Board> board) {
-                recursiveDeleteChildren<true>(ctx, storage, *board, rule, deleteFilter, id, 0);
-            },
-            std::make_unique<Board>(board, nullptr));
-    }
-
-    for (auto &th : threads)
-        th.join();
-#else
-    auto boardClone = std::make_unique<Board>(board, nullptr);
-    recursiveDeleteChildren<true>(ctx, storage, *boardClone, rule, deleteFilter, 0, 0);
-#endif
+    parallelWalkOnBoardClones(board, [this, rule, &deleteFilter, &ctx](Board &board, int id) {
+        recursiveDeleteChildren<true>(ctx, storage, board, rule, deleteFilter, id, 0);
+    });
 
     DBRecord parentRecord;
     if (query(board, rule, parentRecord)) {

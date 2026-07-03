@@ -23,14 +23,12 @@
 #include "../game/board.h"
 #include "../game/scopedmove.h"
 #include "dbclient.h"
+#include "parallelwalk.h"
 #include "renlib.h"
 
 #include <iomanip>
 #include <sstream>
 #include <vector>
-#ifdef MULTI_THREADING
-    #include <thread>
-#endif
 
 namespace {
 
@@ -69,21 +67,14 @@ void copyDatabaseBranch(DBStorage &dbSrc,
                         int        threadId,
                         int        ply)
 {
-    // Find all potential children of this board position
+    // Find all potential children of this board position, spread over subtrees
     std::vector<Pos> toCopyPos;
     toCopyPos.reserve(board.movesLeft());
     FOR_EVERY_EMPTY_POS(&board, pos)
     {
         toCopyPos.push_back(pos);
     }
-
-    // Do permutation based on thread id
-    if (threadId > 0) {
-        for (size_t i = 0; i < toCopyPos.size(); i += (threadId + 1) / 2) {
-            size_t swapIndex = (i * (threadId + 1)) % toCopyPos.size();
-            std::swap(toCopyPos[i], toCopyPos[swapIndex]);
-        }
-    }
+    permuteForThread(toCopyPos, threadId);
 
     // Copy all children
     DBKey    key;
@@ -221,25 +212,12 @@ size_t splitDatabase(DBStorage &dbSrc, DBStorage &dbDst, const Board &board, Rul
 {
     size_t sizeBeforeSplit = dbDst.size();
 
-#if defined(MULTI_THREADING)
-    const size_t             numDeleteThreads = std::thread::hardware_concurrency();
-    std::vector<std::thread> threads;
-    threads.reserve(numDeleteThreads);
+    parallelWalkOnBoardClones(board, [&dbSrc, &dbDst, rule](Board &board, int id) {
+        copyDatabaseBranch(dbSrc, dbDst, board, rule, id, 0);
+    });
 
-    for (int i = 0; i < numDeleteThreads; i++) {
-        threads.emplace_back(
-            [&, rule, id = i](std::unique_ptr<Board> board) {
-                copyDatabaseBranch(dbSrc, dbDst, *board, rule, id, 0);
-            },
-            std::make_unique<Board>(board, nullptr));
-    }
-
-    for (auto &th : threads)
-        th.join();
-#else
-    copyDatabaseBranch(dbSrc, dbDst, const_cast<Board &>(board), rule, 0, 0);
-#endif
-    copyDatabasePathToRoot(dbSrc, dbDst, const_cast<Board &>(board), rule);
+    Board boardClone(board, nullptr);
+    copyDatabasePathToRoot(dbSrc, dbDst, boardClone, rule);
 
     size_t sizeAfterSplit = dbDst.size();
     return sizeAfterSplit - sizeBeforeSplit;

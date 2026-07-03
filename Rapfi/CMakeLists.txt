@@ -236,6 +236,7 @@ set(HEADERS
     database/dbclient.h
     database/dbstorage.h
     database/dbtypes.h
+    database/parallelwalk.h
 	database/dbutils.h
     database/renlib.h
     database/yxdbstorage.h
