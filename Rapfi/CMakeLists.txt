@@ -244,6 +244,7 @@ set(HEADERS
     eval/mix9svqnnue.h
     eval/mix10nnue.h
     eval/mixcommon.h
+    eval/scoretables.h
     eval/simd/activation.h
     eval/simd/isa.h
     eval/simd/linear.h

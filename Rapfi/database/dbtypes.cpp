@@ -18,7 +18,7 @@
 
 #include "dbtypes.h"
 
-#include "../config.h"
+#include "../eval/scoretables.h"
 #include "../core/utils.h"
 
 #include <map>

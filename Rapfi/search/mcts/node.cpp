@@ -18,7 +18,7 @@
 
 #include "node.h"
 
-#include "../../config.h"
+#include "../../eval/scoretables.h"
 #include "nodetable.h"
 
 namespace Search::MCTS {

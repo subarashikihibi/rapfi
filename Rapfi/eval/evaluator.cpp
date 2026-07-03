@@ -19,6 +19,7 @@
 #include "evaluator.h"
 
 #include "../game/board.h"
+#include "scoretables.h"
 
 #include <algorithm>
 #include <cmath>

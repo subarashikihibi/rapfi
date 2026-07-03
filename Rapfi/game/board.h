@@ -18,11 +18,11 @@
 
 #pragma once
 
-#include "../config.h"
 #include "../core/hash.h"
 #include "../core/platform.h"
 #include "../core/pos.h"
 #include "../core/types.h"
+#include "../eval/scoretables.h"
 #include "bitboard.h"
 #include "candarea.h"
 #include "pattern.h"
@@ -36,6 +36,9 @@ class SearchThread;
 }
 namespace Evaluation {
 class Evaluator;
+}
+namespace Config {
+extern CandidateRange DefaultCandidateRange;  // declared here to avoid the config.h include
 }
 
 /// Iterate `pos` over every on-board (non-wall) cell, in ascending Pos order.

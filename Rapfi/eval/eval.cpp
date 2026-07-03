@@ -18,6 +18,7 @@
 
 #include "eval.h"
 
+#include "../config.h"
 #include "../game/board.h"
 #include "evaluator.h"
 
