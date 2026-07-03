@@ -167,10 +167,10 @@ void RenlibReader::fetchOneByte()
     for (int i = 0; i < BYTE_QUEUE_SIZE - 1; i++)
         byteQueue[i] = byteQueue[i + 1];
 
-    // insert new
-    if (!in.eof()) {
-        char tmpc;
-        in.get(tmpc);
+    // insert new; a byte is only valid if the read actually succeeded (checking
+    // eof() alone would treat a failed stream as an endless source of stale bytes)
+    char tmpc;
+    if (in.get(tmpc)) {
         byteQueue[BYTE_QUEUE_SIZE - 1].ch = uint8_t(tmpc);
         byteQueue[BYTE_QUEUE_SIZE - 1].ok = true;
     }

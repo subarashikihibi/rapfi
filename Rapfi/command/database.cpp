@@ -228,7 +228,8 @@ void printDBQuery(std::ostream &os, DBStorage &dbStorage, const DBKey &dbKey)
             os << "(null)";
         else if (dbRecord.label == LABEL_NONE)
             os << "(none)";
-        else if (std::isprint(dbRecord.label) && !std::isspace(dbRecord.label))
+        else if (std::isprint((unsigned char)dbRecord.label)
+                 && !std::isspace((unsigned char)dbRecord.label))
             os << (char)dbRecord.label;
         else
             os << '(' << (int)dbRecord.label << ')';

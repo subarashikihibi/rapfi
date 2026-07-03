@@ -63,46 +63,6 @@ inline int mateRank(const DBRecord &record)
     return std::abs((int)record.value) * 2 + (record.bound() == BOUND_EXACT);
 }
 
-/// Check if new value is more valuable the the old value
-/// @return true if newValue is more valuable; otherwise false.
-bool checkExactValue(DBValue oldValue, DBValue newValue)
-{
-    DBValue absOldValue = std::abs(oldValue);
-    DBValue absNewValue = std::abs(newValue);
-
-    if (absOldValue < VALUE_MATE_IN_MAX_PLY)
-        return true;  // For non-mate old value we always consider new value to be better
-    else if (absNewValue < VALUE_MATE_IN_MAX_PLY)
-        return false;  // Prefer to keep old mate score
-    else {
-        // Both value are mates:
-        // 1. If both value have the same sign, we choose the one with larger absolute.
-        // 2. If both value have different sign, we choose the newer one.
-        return (oldValue < 0) != (newValue < 0) || absNewValue > absOldValue;
-    }
-};
-
-/// Check if new record has a better value than old record.
-/// @return True if new record is better, otherwise false.
-bool checkNewRecordValue(const DBRecord &oldRecord, const DBRecord &newRecord)
-{
-    switch (newRecord.bound()) {
-    default: return false;
-    case BOUND_UPPER:
-        return newRecord.value <= VALUE_MATED_IN_MAX_PLY
-               && (oldRecord.bound() == BOUND_UPPER && newRecord.value < oldRecord.value
-                   || oldRecord.bound() == BOUND_NONE);
-    case BOUND_LOWER:
-        return newRecord.value >= VALUE_MATE_IN_MAX_PLY
-               && (oldRecord.bound() == BOUND_LOWER && newRecord.value > oldRecord.value
-                   || oldRecord.bound() == BOUND_NONE);
-    case BOUND_EXACT:
-        return std::abs(newRecord.value) > VALUE_MATE_IN_MAX_PLY
-               && (oldRecord.bound() != BOUND_EXACT
-                   || checkExactValue(oldRecord.value, newRecord.value));
-    }
-};
-
 /// @brief Iterate all parent keys of a DBKey.
 /// @tparam F the function to receive each parent key, the excluded stone pos and the
 ///     child to parent transform. Returns true to terminate the iteration in advance.

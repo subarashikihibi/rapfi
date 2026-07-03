@@ -23,6 +23,7 @@
 #include "dbstorage.h"
 #include "dbtypes.h"
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -165,9 +166,11 @@ private:
         static constexpr HashKey NullKey = HashKey(-1);
 
         using KVType = std::pair<HashKey, DBRecord>;
-        DBRecordCache(size_t size) : table(size)
+        /// The size is rounded up to a power of two, as operator[] masks the hash
+        /// key with (size - 1). The size is user-settable through the config, so
+        /// an assert alone would corrupt lookups in release builds.
+        DBRecordCache(size_t size) : table(std::size_t(1) << ceilLog2(std::max<size_t>(size, 1)))
         {
-            assert(isPowerOfTwo(size));
             clear();
         }
         KVType &operator[](HashKey key) { return table[(uint32_t)key & (table.size() - 1)]; }

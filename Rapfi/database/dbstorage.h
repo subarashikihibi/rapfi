@@ -55,7 +55,7 @@ struct StonePos
 ///     3. board height
 ///     4. stone positions
 ///     5. side to move (black=0, white=1)
-/// @return Negative if lhs < rhs; 0 if lhs > rhs; Positive if lhs > rhs.
+/// @return Negative if lhs < rhs; 0 if lhs == rhs; Positive if lhs > rhs.
 template <typename DBKey1, typename DBKey2>
 int databaseKeyCompare(const DBKey1 &lhs, const DBKey2 &rhs)
 {
@@ -66,12 +66,11 @@ int databaseKeyCompare(const DBKey1 &lhs, const DBKey2 &rhs)
     if (int diff = (int)lhs.boardHeight - (int)rhs.boardHeight; diff != 0)
         return diff;
 
-    size_t numBytesLhs       = 2 * ((size_t)lhs.numBlackStones + (size_t)lhs.numWhiteStones);
-    size_t numBytesRhs       = 2 * ((size_t)rhs.numBlackStones + (size_t)rhs.numWhiteStones);
-    size_t numBytesToCompare = std::min(numBytesLhs, numBytesRhs);
-    if (numBytesLhs != numBytesRhs)
-        return numBytesLhs - numBytesRhs;
-    if (int diff = std::memcmp(lhs.stones, rhs.stones, numBytesToCompare); diff != 0)
+    int numBytesLhs = 2 * ((int)lhs.numBlackStones + (int)lhs.numWhiteStones);
+    int numBytesRhs = 2 * ((int)rhs.numBlackStones + (int)rhs.numWhiteStones);
+    if (int diff = numBytesLhs - numBytesRhs; diff != 0)
+        return diff;
+    if (int diff = std::memcmp(lhs.stones, rhs.stones, numBytesLhs); diff != 0)
         return diff;
 
     return (int)lhs.sideToMove - (int)rhs.sideToMove;

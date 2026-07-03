@@ -137,7 +137,8 @@ void databaseToCSVFile(::Database::DBStorage                               &dbSt
                 csvStream << "(null)";
             else if (dbRecord.label == LABEL_NONE)
                 csvStream << "(none)";
-            else if (std::isprint(dbRecord.label) && !std::isspace(dbRecord.label))
+            else if (std::isprint((unsigned char)dbRecord.label)
+                     && !std::isspace((unsigned char)dbRecord.label))
                 csvStream << (char)dbRecord.label;
             else
                 csvStream << '(' << (int)dbRecord.label << ')';
