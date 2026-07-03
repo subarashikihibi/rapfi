@@ -18,7 +18,6 @@
 
 #pragma once
 
-#include "../config.h"
 #include "../core/utils.h"
 #include "cache.h"
 #include "dbstorage.h"
@@ -51,12 +50,14 @@ enum class OverwriteRule {
 };
 
 /// Checks whether new record satisfy the overwrite condition
-/// Both oldRecord and newRecord should have valid label, value, deoth, bound.
+/// Both oldRecord and newRecord should have valid label, value, depth, bound.
 bool checkOverwrite(const DBRecord &oldRecord,
                     const DBRecord &newRecord,
                     OverwriteRule   owRule,
-                    int             exactBias      = Config::DatabaseOverwriteExactBias,
-                    int             depthBoundBias = Config::DatabaseOverwriteDepthBoundBias);
+                    int             exactBias,
+                    int             depthBoundBias);
+/// Overload using the configured default biases (Config::DatabaseOverwrite*Bias).
+bool checkOverwrite(const DBRecord &oldRecord, const DBRecord &newRecord, OverwriteRule owRule);
 
 /// DBClient class is the interface for querying and saving results of positions.
 ///

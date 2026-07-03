@@ -18,6 +18,7 @@
 
 #include "dbclient.h"
 
+#include "../config.h"
 #include "../game/board.h"
 #include "../game/scopedmove.h"
 
@@ -483,6 +484,15 @@ bool checkOverwrite(const DBRecord &oldRecord,
                                            + depthBoundBias);
     }
     }
+}
+
+bool checkOverwrite(const DBRecord &oldRecord, const DBRecord &newRecord, OverwriteRule owRule)
+{
+    return checkOverwrite(oldRecord,
+                          newRecord,
+                          owRule,
+                          Config::DatabaseOverwriteExactBias,
+                          Config::DatabaseOverwriteDepthBoundBias);
 }
 
 DBClient::DBClient(DBStorage   &storage,
