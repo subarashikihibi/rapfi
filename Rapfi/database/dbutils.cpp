@@ -19,7 +19,6 @@
 #include "dbutils.h"
 
 #include "../config.h"
-#include "../core/iohelper.h"
 #include "../core/string.h"
 #include "../game/board.h"
 #include "../game/scopedmove.h"
@@ -249,109 +248,104 @@ size_t importLibToDatabase(DBStorage &dbDst, std::istream &libStream, Rule rule,
 {
     size_t writeCount = 0;
 
-    try {
-        auto callback = [&](const Board       &board,
-                            bool               hasTag,
-                            const std::string *text,
-                            const std::string *comment) {
-            DBKey    key = constructDBKey(board, rule);
-            DBRecord oldRecord, newRecord = {LABEL_NONE};
-            bool     hasOldRecord = dbDst.get(key, oldRecord);
+    auto callback = [&](const Board       &board,
+                        bool               hasTag,
+                        const std::string *text,
+                        const std::string *comment) {
+        DBKey    key = constructDBKey(board, rule);
+        DBRecord oldRecord, newRecord = {LABEL_NONE};
+        bool     hasOldRecord = dbDst.get(key, oldRecord);
 
-            if (!text && !comment) {
-                // Write empty record if no record exists
-                if (!hasOldRecord) {
-                    dbDst.set(key, newRecord, RECORD_MASK_LVDB);
-                    writeCount++;
-                }
-
-                return;
-            }
-
-            if (text && text->size() > 0) {
-                const std::string &t = *text;
-                if (t[0] == 'W') {
-                    newRecord.label = LABEL_WIN;
-                    if (t.size() > 1) {
-                        int mateStepFromRoot = std::atoi(t.c_str() + 1);
-                        if (mateStepFromRoot > board.ply()) {
-                            newRecord.value = mated_in(mateStepFromRoot - board.ply());
-                            newRecord.setDepthBound(0, BOUND_EXACT);
-                        }
-                    }
-                }
-                else if (t[0] == 'L') {
-                    newRecord.label = LABEL_LOSE;
-                    if (t.size() > 1) {
-                        int mateStepFromRoot = std::atoi(t.c_str() + 1);
-                        if (mateStepFromRoot > board.ply()) {
-                            newRecord.value = mate_in(mateStepFromRoot - board.ply());
-                            newRecord.setDepthBound(0, BOUND_EXACT);
-                        }
-                    }
-                }
-                else if (t[0] == Config::DatabaseLibBlackWinMark && board.sideToMove() == BLACK) {
-                    newRecord.label = LABEL_WIN;
-                }
-                else if (t[0] == Config::DatabaseLibWhiteWinMark && board.sideToMove() == WHITE) {
-                    newRecord.label = LABEL_WIN;
-                }
-                else if (t[0] == Config::DatabaseLibBlackLoseMark && board.sideToMove() == BLACK) {
-                    newRecord.label = LABEL_LOSE;
-                }
-                else if (t[0] == Config::DatabaseLibWhiteLoseMark && board.sideToMove() == WHITE) {
-                    newRecord.label = LABEL_LOSE;
-                }
-                else if ((t[0] == 'v' || t[0] == 'm') && t.length() > 1) {
-                    newRecord.label = LABEL_NONE;
-                    Value value =
-                        std::clamp((Value)std::atoi(t.c_str() + 1), VALUE_EVAL_MIN, VALUE_EVAL_MAX);
-                    newRecord.value = DBValue(t[0] == 'v' ? -value : value);
-                    newRecord.setDepthBound(0, BOUND_EXACT);
-                }
-                else if (board.ply() > 0 && !Config::DatabaseLibIgnoreBoardText) {
-                    // Write parent record for board text, on the parent position.
-                    ScopedRuleUndo rewind(board, rule);
-                    DBClient       dbClient(dbDst, RECORD_MASK_TEXT);
-                    dbClient.setBoardText(
-                        board,
-                        rule,
-                        rewind.lastMove(),
-                        LegacyFileCPToUTF8(t, Config::DatabaseLegacyFileCodePage));
-                }
-            }
-
-            if (comment && !Config::DatabaseLibIgnoreComment) {
-                std::string newCmt =
-                    LegacyFileCPToUTF8(*comment, Config::DatabaseLegacyFileCodePage);
-                replaceAll(newCmt, "\r\n", "\n");
-
-                if (hasOldRecord) {
-                    std::string cmt;
-                    cmt = oldRecord.comment();
-                    if (!cmt.empty() && cmt.back() != '\b')
-                        cmt.push_back('\b');
-                    cmt.append(newCmt);
-                    newRecord.setComment(cmt);
-                }
-                else
-                    newRecord.setComment(newCmt);
-            }
-
-            if (!hasOldRecord || checkOverwrite(oldRecord, newRecord, OverwriteRule::BetterValue)) {
-                dbDst.set(key,
-                          newRecord,
-                          DBRecordMask((text ? RECORD_MASK_LVDB : RECORD_MASK_NONE)
-                                       | (comment ? RECORD_MASK_TEXT : RECORD_MASK_NONE)));
+        if (!text && !comment) {
+            // Write empty record if no record exists
+            if (!hasOldRecord) {
+                dbDst.set(key, newRecord, RECORD_MASK_LVDB);
                 writeCount++;
             }
-        };
 
-        Renlib::traverseLib(libStream, boardSize, rule, callback);
-    }
-    catch (const std::exception &e) {
-        ERRORL("Error when reading lib file: " << e.what());
-    }
+            return;
+        }
+
+        if (text && text->size() > 0) {
+            const std::string &t = *text;
+            if (t[0] == 'W') {
+                newRecord.label = LABEL_WIN;
+                if (t.size() > 1) {
+                    int mateStepFromRoot = std::atoi(t.c_str() + 1);
+                    if (mateStepFromRoot > board.ply()) {
+                        newRecord.value = mated_in(mateStepFromRoot - board.ply());
+                        newRecord.setDepthBound(0, BOUND_EXACT);
+                    }
+                }
+            }
+            else if (t[0] == 'L') {
+                newRecord.label = LABEL_LOSE;
+                if (t.size() > 1) {
+                    int mateStepFromRoot = std::atoi(t.c_str() + 1);
+                    if (mateStepFromRoot > board.ply()) {
+                        newRecord.value = mate_in(mateStepFromRoot - board.ply());
+                        newRecord.setDepthBound(0, BOUND_EXACT);
+                    }
+                }
+            }
+            else if (t[0] == Config::DatabaseLibBlackWinMark && board.sideToMove() == BLACK) {
+                newRecord.label = LABEL_WIN;
+            }
+            else if (t[0] == Config::DatabaseLibWhiteWinMark && board.sideToMove() == WHITE) {
+                newRecord.label = LABEL_WIN;
+            }
+            else if (t[0] == Config::DatabaseLibBlackLoseMark && board.sideToMove() == BLACK) {
+                newRecord.label = LABEL_LOSE;
+            }
+            else if (t[0] == Config::DatabaseLibWhiteLoseMark && board.sideToMove() == WHITE) {
+                newRecord.label = LABEL_LOSE;
+            }
+            else if ((t[0] == 'v' || t[0] == 'm') && t.length() > 1) {
+                newRecord.label = LABEL_NONE;
+                Value value =
+                    std::clamp((Value)std::atoi(t.c_str() + 1), VALUE_EVAL_MIN, VALUE_EVAL_MAX);
+                newRecord.value = DBValue(t[0] == 'v' ? -value : value);
+                newRecord.setDepthBound(0, BOUND_EXACT);
+            }
+            else if (board.ply() > 0 && !Config::DatabaseLibIgnoreBoardText) {
+                // Write parent record for board text, on the parent position.
+                ScopedRuleUndo rewind(board, rule);
+                DBClient       dbClient(dbDst, RECORD_MASK_TEXT);
+                dbClient.setBoardText(
+                    board,
+                    rule,
+                    rewind.lastMove(),
+                    LegacyFileCPToUTF8(t, Config::DatabaseLegacyFileCodePage));
+            }
+        }
+
+        if (comment && !Config::DatabaseLibIgnoreComment) {
+            std::string newCmt =
+                LegacyFileCPToUTF8(*comment, Config::DatabaseLegacyFileCodePage);
+            replaceAll(newCmt, "\r\n", "\n");
+
+            if (hasOldRecord) {
+                std::string cmt;
+                cmt = oldRecord.comment();
+                if (!cmt.empty() && cmt.back() != '\b')
+                    cmt.push_back('\b');
+                cmt.append(newCmt);
+                newRecord.setComment(cmt);
+            }
+            else
+                newRecord.setComment(newCmt);
+        }
+
+        if (!hasOldRecord || checkOverwrite(oldRecord, newRecord, OverwriteRule::BetterValue)) {
+            dbDst.set(key,
+                      newRecord,
+                      DBRecordMask((text ? RECORD_MASK_LVDB : RECORD_MASK_NONE)
+                                   | (comment ? RECORD_MASK_TEXT : RECORD_MASK_NONE)));
+            writeCount++;
+        }
+    };
+
+    Renlib::traverseLib(libStream, boardSize, rule, callback);
 
     return writeCount;
 }
@@ -359,12 +353,7 @@ size_t importLibToDatabase(DBStorage &dbDst, std::istream &libStream, Rule rule,
 size_t
 exportDatabaseToLib(DBClient &dbClient, std::ostream &libStream, const Board &board, Rule rule)
 {
-    try {
-        return Renlib::exportDatabase(libStream, dbClient, board, rule);
-    }
-    catch (const std::exception &e) {
-        throw std::runtime_error("Failed to export database to lib: " + std::string(e.what()));
-    }
+    return Renlib::exportDatabase(libStream, dbClient, board, rule);
 }
 
 }  // namespace Database

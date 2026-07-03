@@ -182,6 +182,16 @@ struct DBKey
 /// Subclass of DBStorage should implement storage functionaility (read/write/flush).
 /// All operations on the db storage instance should be atmoic and thread-safe, so
 /// multiple reads/write is allowed for different threads at the same time.
+///
+/// Error-handling convention of the database module:
+///   1. Record operations are noexcept -- they may run on search threads.
+///      get/flush report success through their return value; set/del are
+///      best-effort and report nothing.
+///   2. Construction/loading of a concrete storage throws DBStorageError; the
+///      factory boundary (Config::createDefaultDBStorage) catches and reports,
+///      so a database that fails to open never half-exists.
+///   3. Tooling built on top (dbutils, renlib import/export) throws
+///      std::runtime_error; the command layer catches and reports.
 class DBStorage
 {
 public:
