@@ -78,7 +78,7 @@ public:
              DBRecordMask recordMask,
              size_t       dbCacheSize       = 0,
              size_t       dbRecordCacheSize = 0);
-    /// This will can sync() before destroying current database instance.
+    /// Writes back all unsaved records before destroying the client.
     ~DBClient();
 
     /// Returns the underlying database storage instance.
@@ -142,6 +142,19 @@ private:
         bool     dirty;
     };
     LRUCacheTable<HashKey, EntryCache> dbCache;
+
+    /// Write an entry back to the storage backend if it holds unsaved changes.
+    void writeBackIfDirty(EntryCache &entryCache)
+    {
+        if (entryCache.dirty)
+            storage.set(entryCache.key, entryCache.record, mask);
+    }
+
+    /// Collector for dbCache.put() that writes evicted dirty entries back to storage.
+    auto evictedEntryCollector()
+    {
+        return [this](std::pair<HashKey, EntryCache> &&cache) { writeBackIfDirty(cache.second); };
+    }
 
     /// For read-only operations on db entries, we use a fast lookup table to reduce
     /// redundent database query. This table is index only by hash key.

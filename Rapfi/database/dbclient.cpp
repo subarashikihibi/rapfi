@@ -327,22 +327,57 @@ bool isDBKeySymmetry(const DBKey &key, TransformType transform)
     return true;
 }
 
+/// Maps board positions to the canonical position that serves as their board-text
+/// slot in records of a key: apply the key's canonicalizing transform, then fold
+/// with min over every transform the key is symmetric under (a symmetric key makes
+/// several positions equivalent, and the smallest one is the storage slot).
+/// Symmetry flags are precomputed at construction since isDBKeySymmetry is not
+/// cheap and one mapper is typically applied to many positions.
+class CanonicalPosMapper
+{
+public:
+    CanonicalPosMapper(const DBKey &key, int boardSize, TransformType keyTransform)
+        : boardSize(boardSize)
+        , keyTransform(keyTransform)
+    {
+        for (int t = IDENTITY + 1; t < TRANS_NB; t++)
+            isKeySymmetry[t] = isDBKeySymmetry(key, (TransformType)t);
+    }
+
+    Pos operator()(Pos pos) const
+    {
+        Pos canonicalPos = applyTransform(pos, boardSize, keyTransform);
+        for (int t = IDENTITY + 1; t < TRANS_NB; t++) {
+            if (isKeySymmetry[t]) {
+                Pos transformedPos = applyTransform(canonicalPos, boardSize, (TransformType)t);
+                canonicalPos       = std::min(canonicalPos, transformedPos);
+            }
+        }
+        return canonicalPos;
+    }
+
+private:
+    int           boardSize;
+    TransformType keyTransform;
+    bool          isKeySymmetry[TRANS_NB];
+};
+
 }  // namespace
 
 namespace Database {
 
 DBKey constructDBKey(const Board &board, Rule rule, TransformType *transType)
 {
-    DBKey    key[TRANS_NB];
-    StonePos whiteStones[TRANS_NB][MAX_MOVES];
-    for (int trans = IDENTITY; trans < TRANS_NB; trans++) {
-        key[trans].rule           = rule;
-        key[trans].boardWidth     = board.size();
-        key[trans].boardHeight    = board.size();
-        key[trans].sideToMove     = board.sideToMove();
-        key[trans].numBlackStones = 0;
-        key[trans].numWhiteStones = 0;
-    }
+    // Build the identity-transform key from the board's move history, then
+    // reduce it to the smallest key across all symmetries.
+    DBKey    key;
+    StonePos whiteStones[MAX_MOVES];
+    key.rule           = rule;
+    key.boardWidth     = board.size();
+    key.boardHeight    = board.size();
+    key.sideToMove     = board.sideToMove();
+    key.numBlackStones = 0;
+    key.numWhiteStones = 0;
 
     for (int ply = 0; ply < board.ply(); ply++) {
         Pos move = board.getHistoryMove(ply);
@@ -350,44 +385,20 @@ DBKey constructDBKey(const Board &board, Rule rule, TransformType *transType)
             continue;
 
         Color c = board.cell(move).piece;
-        if (c == BLACK) {
-            for (int trans = IDENTITY; trans < TRANS_NB; trans++) {
-                Pos transformedPos = applyTransform(move, board.size(), (TransformType)trans);
-                key[trans].stones[key[trans].numBlackStones++] = {transformedPos.x(),
-                                                                  transformedPos.y()};
-            }
-        }
-        else if (c == WHITE) {
-            for (int trans = IDENTITY; trans < TRANS_NB; trans++) {
-                Pos transformedPos = applyTransform(move, board.size(), (TransformType)trans);
-                whiteStones[trans][key[trans].numWhiteStones++] = {transformedPos.x(),
-                                                                   transformedPos.y()};
-            }
-        }
+        if (c == BLACK)
+            key.stones[key.numBlackStones++] = {move.x(), move.y()};
+        else if (c == WHITE)
+            whiteStones[key.numWhiteStones++] = {move.x(), move.y()};
     }
 
-    // Construct 8 symmetry database keys, and find the smallest one
-    int smallestIndex = 0;
+    std::sort(key.stones, key.stones + key.numBlackStones, std::less<StonePos>());
+    std::copy(whiteStones, whiteStones + key.numWhiteStones, key.stones + key.numBlackStones);
+    std::sort(key.stones + key.numBlackStones,
+              key.stones + key.numBlackStones + key.numWhiteStones,
+              std::less<StonePos>());
 
-    for (int trans = IDENTITY; trans < TRANS_NB; trans++) {
-        std::sort(key[trans].stones,
-                  key[trans].stones + key[trans].numBlackStones,
-                  std::less<StonePos>());
-        std::copy(whiteStones[trans],
-                  whiteStones[trans] + key[trans].numWhiteStones,
-                  key[trans].stones + key[trans].numBlackStones);
-        std::sort(key[trans].stones + key[trans].numBlackStones,
-                  key[trans].stones + key[trans].numBlackStones + key[trans].numWhiteStones,
-                  std::less<StonePos>());
-
-        if (trans != smallestIndex && key[trans] < key[smallestIndex])
-            smallestIndex = trans;
-    }
-
-    if (transType)
-        *transType = static_cast<TransformType>(smallestIndex);
-
-    return key[smallestIndex];
+    toSmallestDBKey(key, transType);
+    return key;
 }
 
 void toSmallestDBKey(DBKey &key, TransformType *transType)
@@ -484,12 +495,10 @@ DBClient::DBClient(DBStorage   &storage,
     , dbRecordCache(std::max<size_t>(dbRecordCacheSize, 1))
 {}
 
-DBClient ::~DBClient()
+DBClient::~DBClient()
 {
-    for (auto &[hashKey, entryCache] : dbCache) {
-        if (entryCache.dirty)
-            storage.set(entryCache.key, entryCache.record, mask);
-    }
+    for (auto &[hashKey, entryCache] : dbCache)
+        writeBackIfDirty(entryCache);
 }
 
 bool DBClient::query(const Board &board, Rule rule, DBRecord &record)
@@ -510,15 +519,9 @@ bool DBClient::query(const Board &board, Rule rule, DBRecord &record)
     DBKey dbKey = constructDBKey(board, rule);
     if (storage.get(dbKey, record, mask)) {
         // Save a new entry cache in dbCache
-        dbCache.put(hashKey,
-                    EntryCache {dbKey, record, RECORD_MASK_NONE},
-                    [&](std::pair<HashKey, EntryCache> &&cache) {
-                        auto &&entryCache = cache.second;
-                        if (entryCache.dirty)
-                            storage.set(entryCache.key, entryCache.record, mask);
-                    });
+        dbCache.put(hashKey, EntryCache {dbKey, record, false}, evictedEntryCollector());
 
-        // Svae a new record cache in dbRecordCache
+        // Save a new record cache in dbRecordCache
         dbRecordCache[hashKey] = std::make_pair(hashKey, record);
 
         return true;
@@ -572,21 +575,12 @@ std::vector<std::pair<Pos, std::string>> DBClient::queryBoardTexts(const Board &
     // Find the smallest canonical pos considering symmetries to query board text
     TransformType parentTrans;
     DBKey         parentKey = constructDBKey(board, rule, &parentTrans);
-    bool          isParentSymmetry[TRANS_NB];
-    for (int t = IDENTITY + 1; t < TRANS_NB; t++)
-        isParentSymmetry[t] = isDBKeySymmetry(parentKey, (TransformType)t);
+    CanonicalPosMapper mapToCanonicalPos(parentKey, board.size(), parentTrans);
 
     // Map all empty pos into canonical pos, and get their board text
     std::vector<std::pair<Pos, std::string>> childBoardTexts;
     for (Pos pos : emptyPosList) {
-        // Find the smallest canonical considering all symmetries
-        Pos canonicalPos = applyTransform(pos, board.size(), parentTrans);
-        for (int t = IDENTITY + 1; t < TRANS_NB; t++) {
-            if (isParentSymmetry[t]) {
-                Pos transformedPos = applyTransform(canonicalPos, board.size(), (TransformType)t);
-                canonicalPos       = std::min(canonicalPos, transformedPos);
-            }
-        }
+        Pos canonicalPos = mapToCanonicalPos(pos);
 
         // Find the board text of this canonical pos
         auto itBegin = std::lower_bound(
@@ -625,14 +619,7 @@ void DBClient::setBoardText(const Board &board, Rule rule, Pos pos, std::string 
     // Find the smallest canonical pos considering symmetries to set board text
     TransformType parentTrans;
     DBKey         parentKey    = constructDBKey(board, rule, &parentTrans);
-    Pos           canonicalPos = applyTransform(pos, board.size(), parentTrans);
-    for (int t = IDENTITY + 1; t < TRANS_NB; t++) {
-        TransformType trans = (TransformType)t;
-        if (isDBKeySymmetry(parentKey, trans)) {
-            Pos tPos     = applyTransform(canonicalPos, board.size(), trans);
-            canonicalPos = std::min(canonicalPos, tPos);
-        }
-    }
+    Pos           canonicalPos = CanonicalPosMapper(parentKey, board.size(), parentTrans)(pos);
 
     record.setBoardText(canonicalPos, text);
     save(board, rule, record, OverwriteRule::Always);
@@ -683,13 +670,7 @@ bool DBClient::save(const Board &board, Rule rule, const DBRecord &record, Overw
     }
 
     if (overwrite) {
-        dbCache.put(hashKey,
-                    EntryCache {dbKey, record, true},
-                    [&](std::pair<HashKey, EntryCache> &&cache) {
-                        auto &&entryCache = cache.second;
-                        if (entryCache.dirty)
-                            storage.set(entryCache.key, entryCache.record, mask);
-                    });
+        dbCache.put(hashKey, EntryCache {dbKey, record, true}, evictedEntryCollector());
         dbRecordCache[hashKey] = std::make_pair(hashKey, record);
         return true;
     }
@@ -713,16 +694,7 @@ void DBClient::del(const Board &board, Rule rule)
         DBRecord parentRecord;
         if (storage.get(parentKey, parentRecord, RECORD_MASK_TEXT)) {
             Pos pos          = Pos {stonePos.x, stonePos.y};
-            Pos canonicalPos = applyTransform(pos, board.size(), parentTransform);
-
-            // Find the smallest canonical considering all symmetries
-            for (int t = IDENTITY + 1; t < TRANS_NB; t++) {
-                TransformType trans = (TransformType)t;
-                if (isDBKeySymmetry(parentKey, trans)) {
-                    Pos tPos     = applyTransform(canonicalPos, board.size(), trans);
-                    canonicalPos = std::min(canonicalPos, tPos);
-                }
-            }
+            Pos canonicalPos = CanonicalPosMapper(parentKey, board.size(), parentTransform)(pos);
 
             // Delete parent record's board text if found
             if (!parentRecord.boardText(canonicalPos).empty()) {
@@ -782,10 +754,8 @@ void DBClient::delChildren(const Board                       &board,
 void DBClient::sync(bool clearCache)
 {
     for (auto &[hashKey, entryCache] : dbCache) {
-        if (entryCache.dirty) {
-            storage.set(entryCache.key, entryCache.record, mask);
-            entryCache.dirty = false;
-        }
+        writeBackIfDirty(entryCache);
+        entryCache.dirty = false;
     }
 
     if (clearCache) {
