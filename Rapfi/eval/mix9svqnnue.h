@@ -19,7 +19,7 @@
 #pragma once
 
 #include "evaluator.h"
-#include "simdops.h"
+#include "mixcommon.h"
 
 #include <array>
 #include <cstddef>
@@ -31,22 +31,15 @@
 namespace Evaluation::mix9svq {
 
 using namespace Evaluation;
+using namespace Evaluation::mixnet;
 
 constexpr uint32_t ArchHashBase    = 0x84a071fe;
-constexpr int      ShapeNum        = 442503;
 constexpr int      FeatureDim      = 64;
 constexpr int      PolicyDim       = 32;
 constexpr int      ValueDim        = 64;
 constexpr int      FeatDWConvDim   = 32;
 constexpr int      PolicyPWConvDim = 16;
 constexpr int      NumHeadBucket   = 1;
-
-template <int OutSize, int InSize>
-struct FCWeight
-{
-    int8_t  weight[OutSize * InSize];
-    int32_t bias[OutSize];
-};
 
 template <int OutSize, int InSize>
 struct StarBlockWeight
@@ -100,29 +93,28 @@ static_assert(offsetof(Weight::HeadBucket, value_l1) % 64 == 0);
 static_assert(offsetof(Weight::HeadBucket, policy_output_weight) % 16 == 0);
 static_assert(sizeof(Weight::HeadBucket) % 64 == 0);
 
-class Accumulator
+struct alignas(64) ValueSumType
+{
+    static constexpr int NGroup = 3;
+
+    std::array<int32_t, FeatureDim> global;
+    std::array<int32_t, FeatureDim> group[NGroup][NGroup];
+};
+
+// Make sure we have proper alignment for SIMD operations
+static_assert(offsetof(ValueSumType, global) % 64 == 0);
+static_assert(offsetof(ValueSumType, group) % 64 == 0);
+
+class Accumulator : private MixAccumulatorState<ValueSumType, FeatureDim, FeatDWConvDim>
 {
 public:
-    struct alignas(64) ValueSumType
-    {
-        static constexpr int NGroup = 3;
-
-        std::array<int32_t, FeatureDim> global;
-        std::array<int32_t, FeatureDim> group[NGroup][NGroup];
-    };
-
-    // Make sure we have proper alignment for SIMD operations
-    static_assert(offsetof(ValueSumType, global) % 64 == 0);
-    static_assert(offsetof(ValueSumType, group) % 64 == 0);
-
-    Accumulator(int boardSize);
-    ~Accumulator();
+    explicit Accumulator(int boardSize) : MixAccumulatorState(boardSize) {}
 
     /// Init accumulator state to empty board.
     void clear(const Weight &w);
-    /// Incremental update mix6 network state.
+    /// Incrementally update the network state for a stone of pieceColor placed at (x, y).
     void move(const Weight &w, Color pieceColor, int x, int y);
-    void undo() { currentVersion--; }
+    using MixAccumulatorState::undo;
 
     /// Calculate value (win/loss/draw tuple) of current network state.
     std::tuple<float, float, float> evaluateValue(const Weight &w);
@@ -130,33 +122,7 @@ public:
     void evaluatePolicy(const Weight &w, PolicyBuffer &policyBuffer);
 
 private:
-    struct ChangeNum
-    {
-        uint16_t inner, outer;
-    };
-    //=============================================================
-    // Network states
-
-    /// Value feature sum of the full board
-    ValueSumType *valueSumTable;          // [H*W+1, FeatureDim] (aligned)
-    ChangeNum    *versionChangeNumTable;  // [H*W+1] (unaligned) num inner changes and outer changes
-    uint16_t     *versionInnerIndexTable;  // [H*W+1, H*W] (unaligned)
-    uint16_t     *versionOuterIndexTable;  // [H*W+1, (H+2)*(W+2)] (unaligned)
-    /// Index table to convert line shape to map feature
-    std::array<uint32_t, 4> *indexTable;  // [N_inner, 4] (unaligned)
-    /// Sumed map feature of four directions
-    std::array<int16_t, FeatureDim> *mapSum;  // [N_inner, FeatureDim] (aligned)
-    /// Map feature after depth wise conv
-    std::array<int16_t, FeatDWConvDim> *mapConv;  // [N_outer, DWConvDim] (aligned)
-
-    //=============================================================
-    int    boardSize;
-    int    outerBoardSize;  // (boardSize + 2)
-    int    currentVersion;
-    int8_t groupIndex[32];
-
-    void initIndexTable();
-    int  getBucketIndex() { return 0; }
+    int getBucketIndex() { return 0; }
 };
 
 class Evaluator : public Evaluation::Evaluator
@@ -177,19 +143,6 @@ public:
     void      evaluatePolicy(const Board &board, PolicyBuffer &policyBuffer, AccLevel level);
 
 private:
-    struct MoveCache
-    {
-        Color  oldColor, newColor;
-        int8_t x, y;
-
-        friend bool isContraryMove(MoveCache a, MoveCache b)
-        {
-            bool isSameCoord = a.x == b.x && a.y == b.y;
-            bool isContrary  = a.oldColor == b.newColor && a.newColor == b.oldColor;
-            return isSameCoord && isContrary;
-        }
-    };
-
     /// Clear all caches to sync accumulator state with current board state.
     void clearCache(Color side);
     /// Record new board action, but not update accumulator instantly.

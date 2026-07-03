@@ -34,24 +34,6 @@ namespace {
 
 using namespace Evaluation::mix9svq;
 
-constexpr auto Power3 = []() {
-    auto pow3 = std::array<int, 16> {};
-    for (size_t i = 0; i < pow3.size(); i++)
-        pow3[i] = power(3, i);
-    return pow3;
-}();
-
-constexpr int DX[4] = {1, 0, 1, 1};
-constexpr int DY[4] = {0, 1, -1, 1};
-
-// Max inner and outer point changes, indexed by board size
-constexpr int MaxInnerChanges[23] = {1,    6,     33,    102,   233,   446,   761,  1166,
-                                     1661, 2246,  2921,  3686,  4541,  5486,  6521, 7646,
-                                     8861, 10166, 11561, 13046, 14621, 16286, 18041};
-constexpr int MaxOuterChanges[23] = {5,     11,    33,    107,   293,   675,   1361,  2483,
-                                     3945,  5747,  7889,  10371, 13193, 16355, 19857, 23699,
-                                     27881, 32403, 37265, 42467, 48009, 53891, 60113};
-
 struct Mix9svqWeightLoader : WeightLoader<mix9svq::Weight>
 {
     LargePagePtr<Weight> load(std::istream &in, Evaluation::EmptyLoadArgs args)
@@ -76,46 +58,14 @@ struct Mix9svqWeightLoader : WeightLoader<mix9svq::Weight>
 
     void read_compressed_mapping(std::istream &in, Weight &w)
     {
-        constexpr int      MappingBits   = 10;
-        constexpr uint64_t MappingMask   = (1 << MappingBits) - 1;
-        constexpr uint16_t ExtensionMask = 1 << (MappingBits - 1);
-        constexpr uint16_t ExtensionBits = ~static_cast<uint16_t>(MappingMask);
-
-        // Read the feature codebook
+        // Read the feature codebook (each codebook is its own 10-bit packed stream)
         for (int mappingIdx = 0; mappingIdx < arraySize(w.codebook); mappingIdx++) {
             auto &codebook = w.codebook[mappingIdx];
 
-            uint64_t u64val    = 0;
-            int      bits_left = 0;
-
-            for (int i = 0; i < arraySize(codebook); i++) {
-                for (int j = 0; j < FeatureDim; j++) {
-                    int16_t feature = 0;
-
-                    if (bits_left >= MappingBits) {
-                        uint16_t masked    = static_cast<uint16_t>(u64val & MappingMask);
-                        uint16_t extension = (masked & ExtensionMask) ? 0xfc00 : 0;
-                        feature            = static_cast<int16_t>(extension | masked);
-
-                        u64val >>= MappingBits;
-                        bits_left -= MappingBits;
-                    }
-                    else {
-                        uint64_t u64val2;
-                        in.read(reinterpret_cast<char *>(&u64val2), sizeof(u64val2));
-
-                        u64val |= u64val2 << bits_left;
-                        uint16_t masked    = static_cast<uint16_t>(u64val & MappingMask);
-                        uint16_t extension = (masked & ExtensionMask) ? 0xfc00 : 0;
-                        feature            = static_cast<int16_t>(extension | masked);
-
-                        u64val    = u64val2 >> (MappingBits - bits_left);
-                        bits_left = 64 - (MappingBits - bits_left);
-                    }
-
-                    codebook[i][j] = feature;
-                }
-            }
+            PackedSignedIntStream<10> stream;
+            for (int i = 0; i < arraySize(codebook); i++)
+                for (int j = 0; j < FeatureDim; j++)
+                    codebook[i][j] = stream.next(in);
         }
 
         // Read the codebook index
@@ -156,21 +106,9 @@ struct Mix9svqWeightLoader : WeightLoader<mix9svq::Weight>
 
 static Evaluation::WeightRegistry<StandardHeaderLoader<Mix9svqWeightLoader>> WeightReg;
 
-constexpr int                   Alignment = simd::NativeAlignment;
-constexpr simd::InstructionType IT        = simd::NativeInstType;
-template <size_t Size, typename T>
-using Batch = simd::detail::VecBatch<Size, T, IT>;
-template <typename FT, typename TT>
-using Convert = simd::detail::VecCvt<FT, TT, IT>;
-using I8LS    = simd::detail::VecLoadStore<int8_t, Alignment, IT>;
-using I16LS   = simd::detail::VecLoadStore<int16_t, Alignment, IT>;
-using I32LS   = simd::detail::VecLoadStore<int32_t, Alignment, IT>;
-// We can only use 16 here due to a bug in the weight layout
-using F32LS = simd::detail::VecLoadStore<float, 16, IT>;
-using I8Op  = simd::detail::VecOp<int8_t, IT>;
-using I16Op = simd::detail::VecOp<int16_t, IT>;
-using I32Op = simd::detail::VecOp<int32_t, IT>;
-using F32Op = simd::detail::VecOp<float, IT>;
+// We can only use alignment 16 here due to a bug in the weight layout:
+// policy_output_weight is only aligned to a 16-byte boundary.
+using F32LSAlign16 = simd::detail::VecLoadStore<float, 16, IT>;
 
 template <int OutSize, int InSize>
 inline void
@@ -204,125 +142,6 @@ starBlock(int8_t output[OutSize], int8_t input[InSize], const StarBlockWeight<Ou
 }  // namespace
 
 namespace Evaluation::mix9svq {
-
-Accumulator::Accumulator(int boardSize)
-    : boardSize(boardSize)
-    , outerBoardSize(boardSize + 2)
-    , currentVersion(-1)
-{
-    int nCells        = boardSize * boardSize;
-    int nInnerChanges = MaxInnerChanges[boardSize];
-    int nOuterChanges = MaxOuterChanges[boardSize];
-
-    valueSumTable          = MemAlloc::alignedArrayAlloc<ValueSumType, Alignment>(nCells + 1);
-    versionChangeNumTable  = new ChangeNum[nCells + 1];
-    versionInnerIndexTable = new uint16_t[(nCells + 1) * nCells];
-    versionOuterIndexTable = new uint16_t[(nCells + 2) * outerBoardSize * outerBoardSize];
-    indexTable             = new std::array<uint32_t, 4>[nInnerChanges];
-    mapSum = MemAlloc::alignedArrayAlloc<std::array<int16_t, FeatureDim>, Alignment>(nInnerChanges);
-    mapConv =
-        MemAlloc::alignedArrayAlloc<std::array<int16_t, FeatDWConvDim>, Alignment>(nOuterChanges);
-
-    // Compute group index based on board pos
-    std::fill_n(groupIndex, arraySize(groupIndex), 0);
-    int size1 = (boardSize / 3) + (boardSize % 3 == 2);
-    int size2 = (boardSize / 3) * 2 + (boardSize % 3 > 0);
-    for (int i = 0; i < boardSize; i++)
-        groupIndex[i] += (i >= size1) + (i >= size2);
-    // Setup version change num of the first layer (version 0)
-    versionChangeNumTable[0] = {uint16_t(boardSize * boardSize),
-                                uint16_t((boardSize + 2) * (boardSize + 2))};
-    // Setup the first layer of version index table to be identity mapping
-    for (int i = 0; i < nCells; i++)
-        versionInnerIndexTable[i] = i;
-    for (int i = 0; i < outerBoardSize * outerBoardSize; i++)
-        versionOuterIndexTable[i] = i;
-
-    // Init index table at the first layer (version 0)
-    initIndexTable();
-}
-
-Accumulator::~Accumulator()
-{
-    MemAlloc::alignedFree(valueSumTable);
-    delete[] versionChangeNumTable;
-    delete[] versionInnerIndexTable;
-    delete[] versionOuterIndexTable;
-    delete[] indexTable;
-    MemAlloc::alignedFree(mapSum);
-    MemAlloc::alignedFree(mapConv);
-}
-
-void Accumulator::initIndexTable()
-{
-    constexpr int length = 11;  // length of line shape
-    constexpr int half   = length / 2;
-
-    // Clear shape table
-    std::fill_n(&indexTable[0][0], 4 * boardSize * boardSize, 0);
-
-    /// Get an empty line encoding with the given boarder distance.
-    /// @param left The distance to the left boarder, in range [0, length/2].
-    /// @param right The distance to the right boarder, in range [0, length/2].
-    auto get_boarder_encoding = [=](int left, int right) -> uint32_t {
-        assert(0 <= left && left <= half);
-        assert(0 <= right && right <= half);
-
-        if (left == half && right == half)
-            return 0;
-        else if (right == half)  // (left < half)
-        {
-            uint32_t code      = 2 * Power3[length];
-            int      left_dist = half - left;
-            for (int i = 1; i < left_dist; i++)
-                code += 1 * Power3[length - i];
-            return code;
-        }
-        else  // (right < half && left <= half)
-        {
-            uint32_t code       = 1 * Power3[length];
-            int      left_dist  = half - left;
-            int      right_dist = half - right;
-            int      right_twos = std::min(left_dist, right_dist);
-            int      left_twos  = std::min(left_dist, right_dist - 1);
-
-            for (int i = 0; i < right_twos; i++)
-                code += 2 * Power3[i];
-            for (int i = 0; i < left_twos; i++)
-                code += 2 * Power3[length - 1 - i];
-
-            for (int i = right_twos; i < right_dist - 1; i++)
-                code += 1 * Power3[i];
-            for (int i = left_twos; i < left_dist - 1; i++)
-                code += 1 * Power3[length - 1 - i];
-
-            return code;
-        }
-    };
-
-    for (int y = 0; y < boardSize; y++)
-        for (int x = 0; x < boardSize; x++) {
-            auto &idxs   = indexTable[y * boardSize + x];
-            int   distx0 = std::min(x - 0, half);
-            int   distx1 = std::min(boardSize - 1 - x, half);
-            int   disty0 = std::min(y - 0, half);
-            int   disty1 = std::min(boardSize - 1 - y, half);
-
-            // DX[0]=1, DY[0]=0
-            idxs[0] = get_boarder_encoding(distx0, distx1);
-            // DX[1]=0, DY[1]=1
-            idxs[1] = get_boarder_encoding(disty0, disty1);
-            // DX[2]=1, DY[2]=-1
-            idxs[2] = get_boarder_encoding(std::min(distx0, disty1), std::min(distx1, disty0));
-            // DX[3]=1, DY[3]=1
-            idxs[3] = get_boarder_encoding(std::min(distx0, disty0), std::min(distx1, disty1));
-
-            assert(idxs[0] < ShapeNum);
-            assert(idxs[1] < ShapeNum);
-            assert(idxs[2] < ShapeNum);
-            assert(idxs[3] < ShapeNum);
-        }
-}
 
 void Accumulator::clear(const Weight &w)
 {
@@ -799,7 +618,8 @@ void Accumulator::evaluatePolicy(const Weight &w, PolicyBuffer &policyBuffer)
                 auto featI32 = I32LS::load(policyLayer1i32 + i * PWConvB::RegWidth);
                 featI32      = I32Op::max(featI32, I32Op::setzero());
                 auto featF32 = Convert<int32_t, float>::convert1(featI32);
-                auto outputW = F32LS::load(bucket.policy_output_weight + i * PWConvB::RegWidth);
+                auto outputW =
+                    F32LSAlign16::load(bucket.policy_output_weight + i * PWConvB::RegWidth);
                 policyAccum  = F32Op::fmadd(featF32, outputW, policyAccum);
             }
 
@@ -917,39 +737,12 @@ void Evaluator::evaluatePolicy(const Board &board, PolicyBuffer &policyBuffer, A
 
 void Evaluator::clearCache(Color side)
 {
-    constexpr Color opponentMap[4] = {WHITE, BLACK, WALL, EMPTY};
-
-    for (MoveCache &mc : moveCache[side]) {
-        if (side == WHITE) {
-            mc.oldColor = opponentMap[mc.oldColor];
-            mc.newColor = opponentMap[mc.newColor];
-        }
-
-        if (mc.oldColor == EMPTY)
-            accumulator[side]->move(*weight[side], mc.newColor, mc.x, mc.y);
-        else
-            accumulator[side]->undo();
-    }
-    moveCache[side].clear();
+    applyMoveCache(side, moveCache[side], *accumulator[side], *weight[side]);
 }
 
 void Evaluator::addCache(Color side, int x, int y, bool isUndo)
 {
-    Color oldColor = EMPTY;
-    Color newColor = side;
-    if (isUndo)
-        std::swap(oldColor, newColor);
-
-    MoveCache newCache {oldColor, newColor, (int8_t)x, (int8_t)y};
-
-    for (Color c : {BLACK, WHITE}) {
-        if (moveCache[c].empty() || !isContraryMove(newCache, moveCache[c].back()))
-            moveCache[c].push_back(newCache);
-        else
-            moveCache[c].pop_back();  // cancel out the last move cache
-
-        assert(moveCache[c].size() < boardSize * boardSize);
-    }
+    queueMoveCache(moveCache, side, x, y, isUndo, boardSize * boardSize);
 }
 
 }  // namespace Evaluation::mix9svq

@@ -243,6 +243,7 @@ set(HEADERS
     eval/evaluator.h
     eval/mix9svqnnue.h
     eval/mix10nnue.h
+    eval/mixcommon.h
     eval/simdops.h
     eval/weightloader.h
 
