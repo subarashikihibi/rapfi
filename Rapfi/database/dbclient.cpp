@@ -131,10 +131,36 @@ bool isKeyReferenced(DBStorage &storage, const DBKey &key, IsDeletedParentKeyPre
     return result;
 }
 
+/// Shared coordination state for one delChildren operation.
+///
+/// Concurrency model of delChildren: every worker thread walks the same game
+/// tree, each with its own board clone and a thread-specific permutation of the
+/// move order so threads spread over different subtrees. Work is claimed through
+/// the storage itself (a successful get on a not-yet-deleted key); the sets here
+/// only let threads cooperate on subtrees another thread has already claimed:
+///   - deletingKeys[ply] holds keys whose subtree deletion is in progress, so a
+///     thread finding its key already deleted can help delete the children
+///     instead of skipping them.
+///   - checkingKeys holds keys whose NoDeleteRecursive subtree check is in
+///     progress at the split boundary, so other threads skip the redundant walk.
+/// Both are cooperation hints, not correctness requirements: the claiming thread
+/// always finishes its own subtree. Tracking stops below MaxSplitPly since deep
+/// collisions are rare and set contention would outweigh the help.
+struct DeleteChildrenContext
+{
+    /// The deepest ply where deleting/checking subtrees are tracked for sharing.
+    static constexpr int MaxSplitPly = 4;
+
+    std::set<DBKey> deletingKeys[MaxSplitPly];
+    std::set<DBKey> checkingKeys;
+    std::mutex      mutex[MaxSplitPly + 1];  // [ply] guards deletingKeys[ply],
+                                             // [MaxSplitPly] guards checkingKeys
+};
+
 /// Delete all children of a board position from the database storage.
-/// @return The number of records deleted.
-template <bool ParentDeleted, int MaxSplitPly = 4>
-void recursiveDeleteChildren(DBStorage                                          &storage,
+template <bool ParentDeleted>
+void recursiveDeleteChildren(DeleteChildrenContext                              &ctx,
+                             DBStorage                                          &storage,
                              Board                                              &board,
                              Rule                                                rule,
                              const std::function<DBClient::DelType(DBRecord &)> &deleteFilter,
@@ -144,9 +170,8 @@ void recursiveDeleteChildren(DBStorage                                          
     if (board.movesLeft() == 0)
         return;
 
-    static std::set<DBKey> deletingKeys[MaxSplitPly];
-    static std::set<DBKey> checkingKeys;
-    static std::mutex      mutex[MaxSplitPly + 1];
+    constexpr int MaxSplitPly  = DeleteChildrenContext::MaxSplitPly;
+    auto &[deletingKeys, checkingKeys, mutex] = ctx;
 
     DBKey thisKey;
     if constexpr (ParentDeleted)
@@ -195,7 +220,8 @@ void recursiveDeleteChildren(DBStorage                                          
                     }
 
                     // Recursive check all children of this key
-                    recursiveDeleteChildren<true>(storage,
+                    recursiveDeleteChildren<true>(ctx,
+                                                  storage,
                                                   board,
                                                   rule,
                                                   deleteFilter,
@@ -230,7 +256,8 @@ void recursiveDeleteChildren(DBStorage                                          
                     }
 
                     // Find all children of this key and delete them
-                    recursiveDeleteChildren<false>(storage,
+                    recursiveDeleteChildren<false>(ctx,
+                                                   storage,
                                                    board,
                                                    rule,
                                                    nullptr,
@@ -256,7 +283,7 @@ void recursiveDeleteChildren(DBStorage                                          
 
             if (shouldDelete)
                 // Find all children of this key and delete them
-                recursiveDeleteChildren<false>(storage, board, rule, nullptr, threadId, ply + 1);
+                recursiveDeleteChildren<false>(ctx, storage, board, rule, nullptr, threadId, ply + 1);
         }
 
         board.undo(rule);
@@ -694,6 +721,7 @@ void DBClient::delChildren(const Board                       &board,
 {
     sync();  // clear all cached records first
 
+    DeleteChildrenContext ctx;
 #if defined(MULTI_THREADING)
     const size_t             numDeleteThreads = std::thread::hardware_concurrency();
     std::vector<std::thread> threads;
@@ -701,8 +729,8 @@ void DBClient::delChildren(const Board                       &board,
 
     for (int i = 0; i < numDeleteThreads; i++) {
         threads.emplace_back(
-            [this, rule, &deleteFilter, id = i](std::unique_ptr<Board> board) {
-                recursiveDeleteChildren<true>(storage, *board, rule, deleteFilter, id, 0);
+            [this, rule, &deleteFilter, &ctx, id = i](std::unique_ptr<Board> board) {
+                recursiveDeleteChildren<true>(ctx, storage, *board, rule, deleteFilter, id, 0);
             },
             std::make_unique<Board>(board, nullptr));
     }
@@ -711,7 +739,7 @@ void DBClient::delChildren(const Board                       &board,
         th.join();
 #else
     auto boardClone = std::make_unique<Board>(board, nullptr);
-    recursiveDeleteChildren<true>(storage, *boardClone, rule, deleteFilter, 0, 0);
+    recursiveDeleteChildren<true>(ctx, storage, *boardClone, rule, deleteFilter, 0, 0);
 #endif
 
     DBRecord parentRecord;
