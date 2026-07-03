@@ -19,7 +19,6 @@
 #include "eval.h"
 
 #include "../game/board.h"
-#include "../search/searchthread.h"
 #include "evaluator.h"
 
 #include <algorithm>
