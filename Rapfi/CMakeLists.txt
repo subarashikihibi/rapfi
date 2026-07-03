@@ -238,7 +238,6 @@ set(HEADERS
 	database/dbutils.h
     database/yxdbstorage.h
 
-    eval/crosscheck.h
     eval/eval.h
     eval/evaluator.h
     eval/mix9svqnnue.h

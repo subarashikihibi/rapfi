@@ -19,6 +19,7 @@
 #include "mix9svqnnue.h"
 
 #include "../config.h"
+#include "mixcommon.h"
 
 #include "../core/compressor.h"
 #include "../core/iohelper.h"
@@ -31,6 +32,106 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+
+
+namespace Evaluation::mix9svq {
+
+using namespace Evaluation;
+using namespace Evaluation::mixnet;
+
+constexpr uint32_t ArchHashBase    = 0x84a071fe;
+constexpr int      FeatureDim      = 64;
+constexpr int      PolicyDim       = 32;
+constexpr int      ValueDim        = 64;
+constexpr int      FeatDWConvDim   = 32;
+constexpr int      PolicyPWConvDim = 16;
+constexpr int      NumHeadBucket   = 1;
+
+template <int OutSize, int InSize>
+struct StarBlockWeight
+{
+    FCWeight<OutSize * 2, InSize> value_corner_up1;
+    FCWeight<OutSize * 2, InSize> value_corner_up2;
+    FCWeight<OutSize, OutSize>    value_corner_down;
+};
+
+struct alignas(64) Weight
+{
+    // 1  mapping layer
+    int16_t  codebook[2][65536][FeatureDim];
+    uint16_t mapping_index[2][ShapeNum];
+    char     __padding_to_64bytes_0[36];
+
+    // 2  Depthwise conv
+    int16_t feature_dwconv_weight[9][FeatDWConvDim];
+    int16_t feature_dwconv_bias[FeatDWConvDim];
+
+    struct HeadBucket
+    {
+        // 3  Policy dynamic pointwise conv
+        FCWeight<PolicyDim * 2, FeatureDim> policy_pwconv_layer_l1;
+        FCWeight<PolicyPWConvDim * PolicyDim + PolicyPWConvDim, PolicyDim * 2>
+            policy_pwconv_layer_l2;
+
+        // 4  Value Group MLP (layer 1,2)
+        StarBlockWeight<ValueDim, FeatureDim> value_corner;
+        StarBlockWeight<ValueDim, FeatureDim> value_edge;
+        StarBlockWeight<ValueDim, FeatureDim> value_center;
+        StarBlockWeight<ValueDim, ValueDim>   value_quad;
+
+        // 5  Value MLP (layer 1,2,3)
+        FCWeight<ValueDim, FeatureDim + ValueDim * 4> value_l1;
+        FCWeight<ValueDim, ValueDim>                  value_l2;
+        FCWeight<4, ValueDim>                         value_l3;
+
+        // 6  Policy output linear
+        float policy_output_weight[16];
+        float policy_output_bias;
+        char  __padding_to_64bytes_1[44];
+    } buckets[NumHeadBucket];
+};
+
+// Make sure we have proper alignment for SIMD operations
+static_assert(offsetof(Weight, feature_dwconv_weight) % 64 == 0);
+static_assert(offsetof(Weight, buckets) % 64 == 0);
+static_assert(offsetof(Weight::HeadBucket, value_corner) % 64 == 0);
+static_assert(offsetof(Weight::HeadBucket, value_l1) % 64 == 0);
+static_assert(offsetof(Weight::HeadBucket, policy_output_weight) % 16 == 0);
+static_assert(sizeof(Weight::HeadBucket) % 64 == 0);
+
+struct alignas(64) ValueSumType
+{
+    static constexpr int NGroup = 3;
+
+    std::array<int32_t, FeatureDim> global;
+    std::array<int32_t, FeatureDim> group[NGroup][NGroup];
+};
+
+// Make sure we have proper alignment for SIMD operations
+static_assert(offsetof(ValueSumType, global) % 64 == 0);
+static_assert(offsetof(ValueSumType, group) % 64 == 0);
+
+class Accumulator : private MixAccumulatorState<ValueSumType, FeatureDim, FeatDWConvDim>
+{
+public:
+    explicit Accumulator(int boardSize) : MixAccumulatorState(boardSize) {}
+
+    /// Init accumulator state to empty board.
+    void clear(const Weight &w);
+    /// Incrementally update the network state for a stone of pieceColor placed at (x, y).
+    void move(const Weight &w, Color pieceColor, int x, int y);
+    using MixAccumulatorState::undo;
+
+    /// Calculate value (win/loss/draw tuple) of current network state.
+    std::tuple<float, float, float> evaluateValue(const Weight &w);
+    /// Calculate policy value of current network state.
+    void evaluatePolicy(const Weight &w, PolicyBuffer &policyBuffer);
+
+private:
+    int getBucketIndex() { return 0; }
+};
+
+}  // namespace Evaluation::mix9svq
 
 namespace {
 
@@ -387,9 +488,6 @@ void Accumulator::move(const Weight &w, Color pieceColor, int x, int y)
                     auto deltaConvF = I16Op::sub(I16Op::mulhi(convW, newFeats[b]),
                                                  I16Op::mulhi(convW, oldFeats[b]));
 
-                    // auto deltaConvF = I16Op::sub(newFeats[b], oldFeats[b]);
-                    // deltaConvF      = I16Op::mulhi(convW, deltaConvF);
-
                     auto convPtr  = convBase + b * ConvB::RegWidth;
                     auto oldConvF = I16LS::load(convPtr);
                     auto newConvF = I16Op::add(oldConvF, deltaConvF);
@@ -719,7 +817,7 @@ void Evaluator::afterUndo(const Board &board, Pos pos)
 
 ValueType Evaluator::evaluateValue(const Board &board, AccLevel level)
 {
-    Color self = board.sideToMove(), oppo = ~self;
+    Color self = board.sideToMove();
 
     // Apply all incremental update for both sides and calculate value
     clearCache(self);
