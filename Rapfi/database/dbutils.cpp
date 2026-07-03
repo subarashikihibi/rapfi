@@ -114,7 +114,7 @@ void databaseToCSVFile(::Database::DBStorage                               &dbSt
     constexpr size_t BatchSize = 2000;
     constexpr char   Sep       = ',';
 
-    DBStorage::Cursor                       cursor {0};
+    DBStorage::Cursor                       cursor;
     std::vector<std::pair<DBKey, DBRecord>> dbKeyRecords;
     dbKeyRecords.reserve(BatchSize);
 
@@ -174,7 +174,7 @@ size_t mergeDatabase(DBStorage &dbDst, DBStorage &dbSrc, OverwriteRule owRule)
 {
     constexpr size_t BatchSize = 2000;
 
-    DBStorage::Cursor                       cursor {0};
+    DBStorage::Cursor                       cursor;
     std::vector<std::pair<DBKey, DBRecord>> dbRecords;
 
     size_t   writeCount = 0;

@@ -226,18 +226,33 @@ public:
     /// Return the number of entries in the database.
     virtual size_t size() noexcept = 0;
 
-    /// Cursor type indicates the current position in the database storage,
-    /// which can be used to scan the whole database.
-    using Cursor = size_t;
+    /// Cursor is an opaque token indicating the current scan position. A
+    /// default-constructed cursor starts from the beginning; a cursor returned
+    /// by scan() resumes after the last entry of the previous batch, and
+    /// converts to false once the whole database has been iterated.
+    /// Holding the position as a key (rather than an index) makes resumption
+    /// O(log n) and keeps a scan stable under concurrent writes: entries
+    /// inserted or deleted behind the cursor are simply not revisited.
+    struct Cursor
+    {
+        Cursor() = default;
+        explicit Cursor(const DBKey &lastKey) : lastKey(lastKey), valid(true) {}
+        explicit operator bool() const { return valid; }
+
+        /// Key of the last entry returned by the previous batch. Zero-initialized
+        /// while inactive so that copying an inactive cursor stays well-defined.
+        DBKey lastKey {};
+        bool  valid = false;  ///< False marks both the begin and the end sentinel.
+    };
     /// Iterate the entire database in an incremental way.
-    /// @param cursor The start position in the database. Pass a zero cursor means
-    ///     starting from the beginning of the database.
+    /// @param cursor The scan position to resume from. A default-constructed
+    ///     cursor starts from the beginning of the database.
     /// @param count The number of entries to get in this call.
     /// @param out The container for receiving iterated entries. Previous elements
     ///     in the container will be kept. The actual elements retrieved can be get
     ///     by comparaing the size before and after the scan.
-    /// @return Cursor that can be used for the next incremental scan, or the zero
-    ///     cursor which means all entries in the database have been iterated.
+    /// @return Cursor that can be used for the next incremental scan, which
+    ///     converts to false once all entries have been iterated.
     virtual Cursor
     scan(Cursor cursor, size_t count, std::vector<std::pair<DBKey, DBRecord>> &out) noexcept = 0;
 };

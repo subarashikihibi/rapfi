@@ -207,23 +207,23 @@ YXDBStorage::Cursor YXDBStorage::scan(Cursor                                   c
 {
     std::shared_lock<std::shared_mutex> readerLock(mutex);
 
-    // Find the starting iterator at the cursor
-    auto it = recordsMap.begin();
-    for (size_t i = 0; i < cursor; i++) {
-        it++;
+    // Resume right after the last key of the previous batch (O(log n), and
+    // insertions/deletions between batches can not shift the scan position)
+    auto it = cursor ? recordsMap.upper_bound(cursor.lastKey) : recordsMap.begin();
 
-        if (it == recordsMap.end())
-            break;
-    }
-
+    bool  readAny = false;
+    DBKey lastKey;
     while (count > 0 && it != recordsMap.end()) {
-        out.emplace_back(DBKey(it->first), it->second);
+        lastKey = DBKey(it->first);
+        out.emplace_back(lastKey, it->second);
         it++;
         count--;
-        cursor++;
+        readAny = true;
     }
 
-    return it == recordsMap.end() ? Cursor(0) : cursor;
+    if (it == recordsMap.end())
+        return Cursor {};
+    return readAny ? Cursor {lastKey} : cursor;  // count == 0 call: position unchanged
 }
 
 void YXDBStorage::load(std::istream &is, bool ignoreCorrupted)
