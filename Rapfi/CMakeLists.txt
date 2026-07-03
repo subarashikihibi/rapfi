@@ -173,6 +173,7 @@ set(CORE_SOURCES
     database/dbclient.cpp
     database/dbutils.cpp
     database/dbtypes.cpp
+    database/renlib.cpp
     database/yxdbstorage.cpp
 
     eval/eval.cpp
@@ -236,6 +237,7 @@ set(HEADERS
     database/dbstorage.h
     database/dbtypes.h
 	database/dbutils.h
+    database/renlib.h
     database/yxdbstorage.h
 
     eval/eval.h
