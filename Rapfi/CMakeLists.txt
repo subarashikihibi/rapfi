@@ -244,6 +244,10 @@ set(HEADERS
     eval/mix9svqnnue.h
     eval/mix10nnue.h
     eval/mixcommon.h
+    eval/simd/activation.h
+    eval/simd/isa.h
+    eval/simd/linear.h
+    eval/simd/vec.h
     eval/simdops.h
     eval/weightloader.h
 
