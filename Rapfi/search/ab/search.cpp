@@ -39,6 +39,7 @@
 #include <iomanip>
 #include <optional>
 #include <random>
+#include <tuple>
 
 using namespace Search;
 using namespace Search::AB;
@@ -808,6 +809,61 @@ void writeDatabaseRecord(Board              &board,
     }
 }
 
+/// Step 6 of search<Rule,NT>: compute the static evaluation when the opponent
+/// has no four/five threat, consulting/updating the TT entry. Sets ss->staticEval.
+/// @return Pair of (eval estimation, static eval improvement over two plies).
+template <Rule Rule>
+std::pair<Value, int> computeStaticEval(Board       &board,
+                                        SearchStack *ss,
+                                        Value        alpha,
+                                        Value        beta,
+                                        HashKey      posKey,
+                                        Pos          skipMove,
+                                        bool         ttHit,
+                                        Value        ttValue,
+                                        Value        ttEval,
+                                        Bound        ttBound)
+{
+    Value eval;
+    if (ttHit) {
+        // Never assume anything about values stored in TT
+        ss->staticEval = eval = ttEval;
+        if (eval == VALUE_NONE)
+            ss->staticEval = eval = Evaluation::evaluate<Rule>(board, alpha, beta);
+
+        // Try to use ttValue as a better eval estimation
+        if (ttValue != VALUE_NONE && (ttBound & (ttValue > eval ? BOUND_LOWER : BOUND_UPPER)))
+            eval = ttValue;
+    }
+    else {
+        ss->staticEval = eval = Evaluation::evaluate<Rule>(board, alpha, beta);
+
+        // Save static evaluation into transposition table
+        if (!skipMove)
+            TT.store(posKey,
+                     VALUE_NONE,
+                     ss->staticEval,
+                     ss->ttPv,
+                     BOUND_NONE,
+                     Pos::NONE,
+                     (int)DEPTH_NONE,
+                     ss->ply);
+    }
+
+    return {eval, ss->staticEval - (ss - 2)->staticEval};
+}
+
+/// Compute a complexity metric of the position from both sides' pattern4 counts.
+inline float positionComplexity(const Board &board, Color self, Color oppo)
+{
+    uint16_t complexCount = 1;
+    for (int pat4 = L_FLEX2; pat4 <= D_BLOCK4_PLUS; pat4++) {
+        complexCount += board.p4Count(self, (Pattern4)pat4);
+        complexCount += board.p4Count(oppo, (Pattern4)pat4);
+    }
+    return ::logf(complexCount);
+}
+
 /// The main search function for both PV and non-PV nodes
 template <Rule Rule, NodeType NT>
 Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth, bool cutNode)
@@ -935,32 +991,16 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
             goto moves_loop;
     }
     else if (!RootNode) {
-        if (ttHit) {
-            // Never assume anything about values stored in TT
-            ss->staticEval = eval = ttEval;
-            if (eval == VALUE_NONE)
-                ss->staticEval = eval = Evaluation::evaluate<Rule>(board, alpha, beta);
-
-            // Try to use ttValue as a better eval estimation
-            if (ttValue != VALUE_NONE && (ttBound & (ttValue > eval ? BOUND_LOWER : BOUND_UPPER)))
-                eval = ttValue;
-        }
-        else {
-            ss->staticEval = eval = Evaluation::evaluate<Rule>(board, alpha, beta);
-
-            // Save static evaluation into transposition table
-            if (!skipMove)
-                TT.store(posKey,
-                         VALUE_NONE,
-                         ss->staticEval,
-                         ss->ttPv,
-                         BOUND_NONE,
-                         Pos::NONE,
-                         (int)DEPTH_NONE,
-                         ss->ply);
-        }
-
-        improvement = ss->staticEval - (ss - 2)->staticEval;
+        std::tie(eval, improvement) = computeStaticEval<Rule>(board,
+                                                              ss,
+                                                              alpha,
+                                                              beta,
+                                                              posKey,
+                                                              skipMove,
+                                                              ttHit,
+                                                              ttValue,
+                                                              ttEval,
+                                                              ttBound);
     }
 
     // Step 7. Razoring with VCF (~68 elo)
@@ -1042,12 +1082,7 @@ moves_loop:
     ss->dbChildWritten       = false;
 
     // Calculate a complexity metric for current position
-    uint16_t complexCount = 1;
-    for (int pat4 = L_FLEX2; pat4 <= D_BLOCK4_PLUS; pat4++) {
-        complexCount += board.p4Count(self, (Pattern4)pat4);
-        complexCount += board.p4Count(oppo, (Pattern4)pat4);
-    }
-    float complexity = ::logf(complexCount);
+    float complexity = positionComplexity(board, self, oppo);
 
     // Fail-High reduction (~50 elo)
     // Indicate cutNode that will probably fail high if current eval is far above beta
