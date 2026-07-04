@@ -189,6 +189,7 @@ set(CORE_SOURCES
     search/movepick.cpp
     search/opening.cpp
     search/searchcommon.cpp
+    search/searchconfig.cpp
     search/searchengine.cpp
     search/searchoutput.cpp
     search/searchthread.cpp
@@ -275,6 +276,7 @@ set(HEADERS
     search/movepick.h
     search/opening.h
     search/searchcommon.h
+    search/searchconfig.h
     search/searcher.h
     search/searchoutput.h
     search/searchthread.h

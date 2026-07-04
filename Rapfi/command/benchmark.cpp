@@ -23,6 +23,7 @@
 #include "../core/types.h"
 #include "../game/board.h"
 #include "../search/hashtable.h"
+#include "../search/searchconfig.h"
 #include "../search/searchthread.h"
 #include "argutils.h"
 #include "command.h"
@@ -77,9 +78,9 @@ EngineState saveEngineStateForBenckmark()
 
     state.threadNum                     = Search::Engine.size();
     state.memoryLimitKB                 = Search::Engine.searcher()->getMemoryLimit();
-    state.aspirationWindow              = Config::AspirationWindow;
-    state.numIterationAfterSingularRoot = Config::NumIterationAfterSingularRoot;
-    state.numIterationAfterMate         = Config::NumIterationAfterMate;
+    state.aspirationWindow              = Search::SearchCfg.aspirationWindow;
+    state.numIterationAfterSingularRoot = Search::SearchCfg.numIterationAfterSingularRoot;
+    state.numIterationAfterMate         = Search::SearchCfg.numIterationAfterMate;
     state.messageMode                   = Config::MessageMode;
 
     return state;
@@ -90,9 +91,9 @@ void recoverEngineState(EngineState state)
     Search::Engine.setNumThreads(state.threadNum);
     Search::Engine.searcher()->setMemoryLimit(state.memoryLimitKB);
     Config::MessageMode                   = state.messageMode;
-    Config::AspirationWindow              = state.aspirationWindow;
-    Config::NumIterationAfterSingularRoot = state.numIterationAfterSingularRoot;
-    Config::NumIterationAfterMate         = state.numIterationAfterMate;
+    Search::SearchCfg.aspirationWindow              = state.aspirationWindow;
+    Search::SearchCfg.numIterationAfterSingularRoot = state.numIterationAfterSingularRoot;
+    Search::SearchCfg.numIterationAfterMate         = state.numIterationAfterMate;
 }
 
 void Command::benchmark()
@@ -131,9 +132,9 @@ void Command::benchmark()
 
     MESSAGEL("=========Search Bench=========");
     Config::MessageMode                   = MsgMode::NONE;
-    Config::AspirationWindow              = true;
-    Config::NumIterationAfterSingularRoot = 0;
-    Config::NumIterationAfterMate         = 0;
+    Search::SearchCfg.aspirationWindow              = true;
+    Search::SearchCfg.numIterationAfterSingularRoot = 0;
+    Search::SearchCfg.numIterationAfterMate         = 0;
     Search::Engine.setNumThreads(1);
     Search::Engine.searcher()->setMemoryLimit(TTSizeMB * 1024);
     Search::SearchOptions options;

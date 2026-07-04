@@ -20,6 +20,7 @@
 #include "../core/iohelper.h"
 #include "../core/utils.h"
 #include "../search/hashtable.h"
+#include "../search/searchconfig.h"
 #include "../search/searchthread.h"
 #include "../tuning/datawriter.h"
 #include "argutils.h"
@@ -310,7 +311,7 @@ void Command::selfplay(int argc, char *argv[])
         Config::MessageMode = MsgMode::NONE;
     else
         Config::MessageMode = MsgMode::BRIEF;
-    Config::AspirationWindow = true;
+    Search::SearchCfg.aspirationWindow = true;
 
     // Set num threads and TT size
     Search::Engine.setNumThreads(numThreads);

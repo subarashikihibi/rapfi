@@ -31,6 +31,7 @@
 #include "search/ab/searcher.h"
 #include "search/hashtable.h"
 #include "search/mcts/searcher.h"
+#include "search/searchconfig.h"
 #include "search/searchthread.h"
 
 #ifdef USE_ORT_EVALUATOR
@@ -110,62 +111,6 @@ size_t DefaultTTSizeKB = 0;
 // Search options
 
 const char *DefaultSearcherName = "alphabeta";
-
-/// Whether to enable aspiration window.
-bool AspirationWindow = true;
-/// Whether to filter redundant symmetry moves at root.
-bool FilterSymmetryRootMoves = true;
-/// Number of iterations after we found a mate.
-int NumIterationAfterMate = 6;
-/// Number of iterations after we found a singular root.
-int NumIterationAfterSingularRoot = 4;
-/// Max depth to search.
-int MaxSearchDepth = 99;
-/// Expand node (evaluating policy) when first evaluate a node (evaluating value).
-bool ExpandWhenFirstEvaluate = false;
-/// The maximum number of visits per playout in MCTS search.
-int MaxNumVisitsPerPlayout = 100;
-/// How many nodes to print root moves in MCTS search. (Positive number to enable)
-int NodesToPrintMCTSRootmoves = 0;
-/// How much milliseconds to print root moves in MCTS search. (Positive number to enable)
-int TimeToPrintMCTSRootmoves = 1000;
-/// Maximum number of non-pv root moves to print in MCTS search.
-int MaxNonPVRootmovesToPrint = 10;
-/// Maximum number of search nodes after we found that we are in singular root.
-int NumNodesAfterSingularRoot = 100;
-/// The power of two number of shards that the node table has.
-int NumNodeTableShardsPowerOfTwo = 10;
-/// The ratio to decrase utility when child draw rate is high.
-float DrawUtilityPenalty = 0.35f;
-
-// Time management options
-
-/// Time reserved for delay in communication between engine and GUI.
-int TurnTimeReserved = 30;
-/// Number of moves spared for the rest of game
-float MatchSpace = 22.0f;
-/// Minimum number of moves spared for the rest of game
-float MatchSpaceMin = 7.0f;
-/// Average branch factor to whether next depth has enough time
-float AverageBranchFactor = 1.7f;
-/// Exit search if turn time is used more than this ratio (even given ample match time)
-float AdvancedStopRatio = 0.9f;
-/// Plan time management at most this many moves ahead
-int MoveHorizon = 64;
-/// Bias of time divisor factor to depth
-float TimeDivisorBias = 1.25f;
-/// Scale of time divisor factor to depth
-float TimeDivisorScale = 0.02f;
-/// Pow to depth in time divisor factor
-float TimeDivisorDepthPow = 1.4f;
-/// Scale of score to falling factor
-float FallingFactorScale = 0.0032f;
-/// Offset of score to falling factor
-float FallingFactorBias = 0.544f;
-/// Scale of best move stable ply to reduction factor
-float BestmoveStableReductionScale = 0.0125f;
-/// Power of previous time reduction factor to get current factor
-float BestmoveStablePrevReductionPow = 0.528f;
 
 // -------------------------------------------------
 // Database options
@@ -261,8 +206,6 @@ void readValueModel(const cpptoml::table &t, SetterType setter);
 
 /// Load config from a stream.
 /// @param configStream A input stream that contains a config file.
-/// @param skipModelLoading Whether to skip model loading. Can be useful when
-///     model is loaded separately from a binary file.
 /// @return Returns true if loading succeeded, otherwise returns false.
 bool Config::loadConfig(std::istream &configStream)
 {
@@ -413,56 +356,71 @@ void Config::readSearch(const cpptoml::table &t)
     if (auto v = t.get_as<std::string>("default_searcher"); v)
         Search::Engine.setupSearcher(createSearcher(*v));
 
+    using Search::SearchCfg, Search::TimeCfg;
+
     // Parameters for alpha-beta search
-    AspirationWindow = t.get_as<bool>("aspiration_window").value_or(AspirationWindow);
-    FilterSymmetryRootMoves =
-        t.get_as<bool>("filter_symmetry_root_moves").value_or(FilterSymmetryRootMoves);
-    NumIterationAfterMate =
-        t.get_as<int>("num_iteration_after_mate").value_or(NumIterationAfterMate);
-    NumIterationAfterSingularRoot =
-        t.get_as<int>("num_iteration_after_singular_root").value_or(NumIterationAfterSingularRoot);
-    MaxSearchDepth = t.get_as<int>("max_search_depth").value_or(MaxSearchDepth);
+    SearchCfg.aspirationWindow =
+        t.get_as<bool>("aspiration_window").value_or(SearchCfg.aspirationWindow);
+    SearchCfg.filterSymmetryRootMoves =
+        t.get_as<bool>("filter_symmetry_root_moves").value_or(SearchCfg.filterSymmetryRootMoves);
+    SearchCfg.numIterationAfterMate =
+        t.get_as<int>("num_iteration_after_mate").value_or(SearchCfg.numIterationAfterMate);
+    SearchCfg.numIterationAfterSingularRoot =
+        t.get_as<int>("num_iteration_after_singular_root")
+            .value_or(SearchCfg.numIterationAfterSingularRoot);
+    SearchCfg.maxSearchDepth =
+        t.get_as<int>("max_search_depth").value_or(SearchCfg.maxSearchDepth);
 
     // Parameters for MCTS search
-    ExpandWhenFirstEvaluate =
-        t.get_as<bool>("expand_when_first_evaluate").value_or(ExpandWhenFirstEvaluate);
-    MaxNumVisitsPerPlayout =
-        t.get_as<int>("max_num_visits_per_playout").value_or(MaxNumVisitsPerPlayout);
-    NodesToPrintMCTSRootmoves =
-        t.get_as<int>("nodes_to_print_mcts_rootmoves").value_or(NodesToPrintMCTSRootmoves);
-    TimeToPrintMCTSRootmoves =
-        t.get_as<int>("time_to_print_mcts_rootmoves").value_or(TimeToPrintMCTSRootmoves);
-    MaxNonPVRootmovesToPrint =
-        t.get_as<int>("max_non_pv_rootmoves_to_print").value_or(MaxNonPVRootmovesToPrint);
-    NumNodesAfterSingularRoot =
-        t.get_as<int>("num_nodes_after_singular_root").value_or(NumNodesAfterSingularRoot);
-    NumNodeTableShardsPowerOfTwo =
-        t.get_as<int>("num_node_table_shards_power_of_two").value_or(NumNodeTableShardsPowerOfTwo);
-    DrawUtilityPenalty = t.get_as<double>("draw_utility_penalty").value_or(DrawUtilityPenalty);
+    SearchCfg.expandWhenFirstEvaluate =
+        t.get_as<bool>("expand_when_first_evaluate").value_or(SearchCfg.expandWhenFirstEvaluate);
+    SearchCfg.maxNumVisitsPerPlayout =
+        t.get_as<int>("max_num_visits_per_playout").value_or(SearchCfg.maxNumVisitsPerPlayout);
+    SearchCfg.nodesToPrintMCTSRootmoves = t.get_as<int>("nodes_to_print_mcts_rootmoves")
+                                              .value_or(SearchCfg.nodesToPrintMCTSRootmoves);
+    SearchCfg.timeToPrintMCTSRootmoves =
+        t.get_as<int>("time_to_print_mcts_rootmoves").value_or(SearchCfg.timeToPrintMCTSRootmoves);
+    SearchCfg.maxNonPVRootmovesToPrint = t.get_as<int>("max_non_pv_rootmoves_to_print")
+                                             .value_or(SearchCfg.maxNonPVRootmovesToPrint);
+    SearchCfg.numNodesAfterSingularRoot = t.get_as<int>("num_nodes_after_singular_root")
+                                              .value_or(SearchCfg.numNodesAfterSingularRoot);
+    SearchCfg.numNodeTableShardsPowerOfTwo =
+        t.get_as<int>("num_node_table_shards_power_of_two")
+            .value_or(SearchCfg.numNodeTableShardsPowerOfTwo);
+    SearchCfg.drawUtilityPenalty =
+        t.get_as<double>("draw_utility_penalty").value_or(SearchCfg.drawUtilityPenalty);
 
     // Read time management options
     if (auto tm = t.get_table("timectl")) {
-        TurnTimeReserved = tm->get_as<int>("turn_time_reserved").value_or(TurnTimeReserved);
-        MatchSpace       = tm->get_as<double>("match_space").value_or(MatchSpace);
-        MatchSpaceMin    = tm->get_as<double>("match_space_min").value_or(MatchSpaceMin);
-        AverageBranchFactor =
-            tm->get_as<double>("average_branch_factor").value_or(AverageBranchFactor);
-        AdvancedStopRatio = tm->get_as<double>("advanced_stop_ratio").value_or(AdvancedStopRatio);
-        MoveHorizon       = tm->get_as<int>("move_horizon").value_or(MoveHorizon);
+        TimeCfg.turnTimeReserved =
+            tm->get_as<int>("turn_time_reserved").value_or(TimeCfg.turnTimeReserved);
+        TimeCfg.matchSpace = tm->get_as<double>("match_space").value_or(TimeCfg.matchSpace);
+        TimeCfg.matchSpaceMin =
+            tm->get_as<double>("match_space_min").value_or(TimeCfg.matchSpaceMin);
+        TimeCfg.averageBranchFactor =
+            tm->get_as<double>("average_branch_factor").value_or(TimeCfg.averageBranchFactor);
+        TimeCfg.advancedStopRatio =
+            tm->get_as<double>("advanced_stop_ratio").value_or(TimeCfg.advancedStopRatio);
+        TimeCfg.moveHorizon = tm->get_as<int>("move_horizon").value_or(TimeCfg.moveHorizon);
 
-        TimeDivisorScale = tm->get_as<double>("time_divisor_scale").value_or(TimeDivisorScale);
-        TimeDivisorBias  = tm->get_as<double>("time_divisor_bias").value_or(TimeDivisorBias);
-        TimeDivisorDepthPow =
-            tm->get_as<double>("time_divisor_depth_pow").value_or(TimeDivisorDepthPow);
+        TimeCfg.timeDivisorScale =
+            tm->get_as<double>("time_divisor_scale").value_or(TimeCfg.timeDivisorScale);
+        TimeCfg.timeDivisorBias =
+            tm->get_as<double>("time_divisor_bias").value_or(TimeCfg.timeDivisorBias);
+        TimeCfg.timeDivisorDepthPow =
+            tm->get_as<double>("time_divisor_depth_pow").value_or(TimeCfg.timeDivisorDepthPow);
 
-        FallingFactorScale =
-            tm->get_as<double>("falling_factor_scale").value_or(FallingFactorScale);
-        FallingFactorBias = tm->get_as<double>("falling_factor_bias").value_or(FallingFactorBias);
+        TimeCfg.fallingFactorScale =
+            tm->get_as<double>("falling_factor_scale").value_or(TimeCfg.fallingFactorScale);
+        TimeCfg.fallingFactorBias =
+            tm->get_as<double>("falling_factor_bias").value_or(TimeCfg.fallingFactorBias);
 
-        BestmoveStableReductionScale = tm->get_as<double>("bestmove_stable_reduction_scale")
-                                           .value_or(BestmoveStableReductionScale);
-        BestmoveStablePrevReductionPow = tm->get_as<double>("bestmove_stable_prev_reduction_pow")
-                                             .value_or(BestmoveStablePrevReductionPow);
+        TimeCfg.bestmoveStableReductionScale =
+            tm->get_as<double>("bestmove_stable_reduction_scale")
+                .value_or(TimeCfg.bestmoveStableReductionScale);
+        TimeCfg.bestmoveStablePrevReductionPow =
+            tm->get_as<double>("bestmove_stable_prev_reduction_pow")
+                .value_or(TimeCfg.bestmoveStablePrevReductionPow);
     }
 }
 

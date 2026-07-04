@@ -21,6 +21,7 @@
 #include "../config.h"
 #include "../core/iohelper.h"
 #include "../game/board.h"
+#include "searchconfig.h"
 #include "searchthread.h"
 #include "timecontrol.h"
 
@@ -47,7 +48,7 @@ void SearchPrinter::printEnteringMove(SearchThread      &th,
                                       int                rootDepth,
                                       Pos                move)
 {
-    if (showRealtimeInLoop(th, tc, rootDepth) && !Config::AspirationWindow && pvIdx == 0
+    if (showRealtimeInLoop(th, tc, rootDepth) && !SearchCfg.aspirationWindow && pvIdx == 0
         && !th.engine.ctx.inPonder.load(std::memory_order_relaxed))
         REALTIME("POS", move, th.board->size());
 }
@@ -58,7 +59,7 @@ void SearchPrinter::printLeavingMove(SearchThread      &th,
                                      int                rootDepth,
                                      Pos                move)
 {
-    if (showRealtimeInLoop(th, tc, rootDepth) && !Config::AspirationWindow && pvIdx == 0
+    if (showRealtimeInLoop(th, tc, rootDepth) && !SearchCfg.aspirationWindow && pvIdx == 0
         && !th.engine.ctx.inPonder.load(std::memory_order_relaxed))
         REALTIME("DONE", move, th.board->size());
 }

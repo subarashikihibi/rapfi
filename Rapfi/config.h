@@ -68,39 +68,6 @@ extern size_t              MemoryReservedMB[RULE_NB];
 extern size_t              DefaultTTSizeKB;
 
 // -------------------------------------------------
-// Search options
-extern bool AspirationWindow;
-extern bool FilterSymmetryRootMoves;
-extern int  NumIterationAfterMate;
-extern int  NumIterationAfterSingularRoot;
-extern int  MaxSearchDepth;
-
-extern bool  ExpandWhenFirstEvaluate;
-extern int   MaxNumVisitsPerPlayout;
-extern int   NodesToPrintMCTSRootmoves;
-extern int   TimeToPrintMCTSRootmoves;
-extern int   MaxNonPVRootmovesToPrint;
-extern int   NumNodesAfterSingularRoot;
-extern int   NumNodeTableShardsPowerOfTwo;
-extern float DrawUtilityPenalty;
-
-// -------------------------------------------------
-// Time management options
-extern int   TurnTimeReserved;
-extern float MatchSpace;
-extern float MatchSpaceMin;
-extern float AverageBranchFactor;
-extern float AdvancedStopRatio;
-extern int   MoveHorizon;
-extern float TimeDivisorBias;
-extern float TimeDivisorScale;
-extern float TimeDivisorDepthPow;
-extern float FallingFactorScale;
-extern float FallingFactorBias;
-extern float BestmoveStableReductionScale;
-extern float BestmoveStablePrevReductionPow;
-
-// -------------------------------------------------
 // Database options
 extern bool        DatabaseDefaultEnabled;
 extern uint16_t    DatabaseLegacyFileCodePage;
@@ -144,8 +111,6 @@ extern int                       DatabaseQueryResultDepthBoundBias;
 
 /// Loads TOML config from a text stream.
 /// @param configStream Input config text stream.
-/// @param skipModelLoading Whether to skip model loading. This can be set when
-/// model is overrided in command line.
 /// @return True if config is loaded successfully.
 bool loadConfig(std::istream &configStream);
 
