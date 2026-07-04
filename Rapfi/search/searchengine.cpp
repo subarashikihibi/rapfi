@@ -19,11 +19,15 @@
 #include "searchengine.h"
 
 #include "../config.h"
+#include "../core/iohelper.h"
+#include "../core/utils.h"
 #include "../database/dbclient.h"
 #include "../database/dbconfig.h"
 #include "../database/dbstorage.h"
 #include "../eval/evaluator.h"
 #include "../game/board.h"
+#include "ab/searcher.h"
+#include "mcts/searcher.h"
 #include "movepick.h"
 #include "opening.h"
 #include "searcher.h"
@@ -114,10 +118,30 @@ void generateRootMoves(SearchThread &th)
     }
 }
 
+const char *DefaultSearcherName = "alphabeta";
+
 }  // namespace
 
 /// Global search engine
 SearchEngine Engine;
+
+std::unique_ptr<Searcher> createSearcher(std::string searcherName)
+{
+    if (searcherName.empty())
+        searcherName = DefaultSearcherName;
+
+    upperInplace(searcherName);
+
+    if (searcherName == "ALPHABETA")
+        return std::make_unique<AB::ABSearcher>();
+    if (searcherName == "MCTS")
+        return std::make_unique<MCTS::MCTSSearcher>();
+
+    ERRORL("Unknown search type: " << searcherName
+                                   << ", must be one of [alphabeta, mcts]."
+                                      " Use alphabeta searcher as default.");
+    return std::make_unique<AB::ABSearcher>();
+}
 
 DatabaseSearchParams DatabaseSearchParams::captureFromConfig()
 {
@@ -424,7 +448,7 @@ SearchEngine::SearchEngine()
     ctx.engine = this;
 
     // Set default searcher
-    setupSearcher(Config::createSearcher());
+    setupSearcher(createSearcher());
 }
 
 SearchEngine::~SearchEngine()

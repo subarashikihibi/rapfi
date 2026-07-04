@@ -27,11 +27,10 @@
 #include "../eval/evalconfig.h"
 #include "../eval/evaluator.h"
 #include "../game/board.h"
-#include "../search/ab/searcher.h"
 #include "../search/hashtable.h"
-#include "../search/mcts/searcher.h"
 #include "../search/movepick.h"
 #include "../search/opening.h"
+#include "../search/searcher.h"
 #include "../search/searchthread.h"
 #include "../tuning/tunemap.h"
 #include "command.h"
@@ -420,7 +419,7 @@ void getOption()
     }
     else if (token == "SEARCH_TYPE") {
         std::cin >> str;
-        Search::Engine.setupSearcher(Config::createSearcher(str));
+        Search::Engine.setupSearcher(Search::createSearcher(str));
         Search::Engine.clear(true);
     }
     else {

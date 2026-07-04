@@ -30,10 +30,9 @@
 #include "eval/mix10nnue.h"
 #include "eval/mix9svqnnue.h"
 #include "game/pattern.h"
-#include "search/ab/searcher.h"
 #include "search/hashtable.h"
-#include "search/mcts/searcher.h"
 #include "search/searchconfig.h"
+#include "search/searcher.h"
 #include "search/searchthread.h"
 
 #ifdef USE_ORT_EVALUATOR
@@ -84,11 +83,6 @@ namespace Config {
 // General options
 
 GeneralConfig GeneralCfg;
-
-// -------------------------------------------------
-// Search options
-
-const char *DefaultSearcherName = "alphabeta";
 
 // -------------------------------------------------
 // Database options
@@ -266,7 +260,7 @@ void Config::readGeneral(const cpptoml::table &t)
 void Config::readSearch(const cpptoml::table &t)
 {
     if (auto v = t.get_as<std::string>("default_searcher"); v)
-        Search::Engine.setupSearcher(createSearcher(*v));
+        Search::Engine.setupSearcher(::Search::createSearcher(*v));
 
     using Search::SearchCfg, Search::TimeCfg;
 
@@ -895,24 +889,6 @@ void Config::exportModel(std::ostream &outStream)
 
         out->write(reinterpret_cast<char *>(scores), sizeof(scores));
     }
-}
-
-std::unique_ptr<::Search::Searcher> Config::createSearcher(std::string searcherName)
-{
-    if (searcherName.empty())
-        searcherName = DefaultSearcherName;
-
-    upperInplace(searcherName);
-
-    if (searcherName == "ALPHABETA")
-        return std::make_unique<Search::AB::ABSearcher>();
-    if (searcherName == "MCTS")
-        return std::make_unique<Search::MCTS::MCTSSearcher>();
-
-    ERRORL("Unknown search type: " << searcherName
-                                   << ", must be one of [alphabeta, mcts]."
-                                      " Use alphabeta searcher as default.");
-    return std::make_unique<Search::AB::ABSearcher>();
 }
 
 std::unique_ptr<::Database::DBStorage> Config::createDefaultDBStorage(std::string utf8URL)

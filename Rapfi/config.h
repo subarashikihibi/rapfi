@@ -33,10 +33,6 @@
 /// MsgMode represents the message mode that controls how messages are outputed in search.
 enum class MsgMode { NONE, BRIEF, NORMAL, UCILIKE };
 
-namespace Search {
-class Searcher;  // forward declaration
-}
-
 namespace Database {
 class DBStorage;  // forward declaration
 }
@@ -96,14 +92,6 @@ bool loadModel(std::istream &inStream);
 
 /// Exports current classic evaluation model to a binary stream.
 void exportModel(std::ostream &outStream);
-
-// -------------------------------------------------
-// Searcher loading
-
-/// Create a searcher instance from config.
-/// @param searcherName The name of the searcher. Empty string to use default.
-/// @return The popinter to the searcher. Can not be nullptr.
-std::unique_ptr<::Search::Searcher> createSearcher(std::string searcherName = "");
 
 // -------------------------------------------------
 // Database loading
