@@ -44,6 +44,36 @@ namespace Search {
 class Searcher;    // forward declaration
 class ThreadPool;  // forward declaration
 
+/// SearchContext holds all state scoped to ONE search request: inputs copied at
+/// startThinking, shared per-search state, and the result outputs. One instance
+/// is owned by the thread pool and reset per search. (Per-game state lives on the
+/// Searcher implementations; per-thread state on SearchThread.)
+struct SearchContext
+{
+    // --- Inputs (set by reset()) ---
+    /// Current search options. Non-search operations (e.g. gomocup TRACE
+    /// handlers) may assign this directly without a reset().
+    SearchOptions options;
+    /// Is in pondering mode? (read by the protocol thread while search runs)
+    std::atomic_bool inPonder;
+
+    // --- Shared per-search state ---
+    /// Calls count before exit condition check (main search thread only)
+    uint32_t callsCnt;
+    /// Should we start pondering after finishing this move?
+    /// (set during search, read by the protocol thread)
+    std::atomic_bool startPonderAfterThinking;
+
+    // --- Outputs ---
+    /// Action type of the search result
+    ActionType resultAction;
+    /// Searched best move result
+    Pos bestMove;
+
+    /// Reset the context for a new search (the startThinking path).
+    void reset(const SearchOptions &opts, bool ponder);
+};
+
 /// SearchThread is the base class for all search algorithms. It contains per-thread
 /// states, including a board clone, evaluator, root moves list, as well as various
 /// heruistic states. All search algorithms must have a derived class from SearchThread
@@ -133,8 +163,6 @@ class MainSearchThread : public SearchThread
 public:
     MainSearchThread(ThreadPool &threadPool) : SearchThread::SearchThread(threadPool, 0) {}
 
-    /// Clear the main thread state between two search.
-    void clear() override;
     /// Check exit condition (time/nodes) and set ThreadPool's terminate flag.
     /// @return True if we should stop the search now.
     void checkExit(uint32_t elapsedCalls = 1);
@@ -144,21 +172,6 @@ public:
     /// @param task The custom task to run in each thread.
     /// @param includeSelf If true, the main thread will also run the task.
     void runCustomTaskAndWait(std::function<void(SearchThread &)> task, bool includeSelf);
-
-    /// Current search options
-    SearchOptions  searchOptions;
-    SearchOptions &options() { return searchOptions; }
-
-    /// Action type of the search result
-    ActionType resultAction;
-    /// Searched best move result
-    Pos bestMove;
-    /// Calls count before exit condition check
-    uint32_t callsCnt;
-    /// Should we start pondering after finishing this move?
-    std::atomic_bool startPonderAfterThinking;
-    /// Is in pondering mode?
-    std::atomic_bool inPonder;
 };
 
 /// ThreadPool class is the container for all search threads. The first
@@ -192,6 +205,9 @@ private:
     }
 
 public:
+    /// The per-search context of this thread pool, reset at each startThinking.
+    SearchContext ctx;
+
     /// Wait for (other) search threads to finish their current works.
     /// @note When called inside the main thread, it will only wait for other
     ///     threads to finish their current works, excluding the main thread itself.
@@ -243,8 +259,7 @@ inline SearchDataType *SearchThread::searchDataAs() const
 
 inline SearchOptions &SearchThread::options() const
 {
-    assert(threads.main());
-    return threads.main()->searchOptions;
+    return threads.ctx.options;
 }
 
 extern ThreadPool Threads;

@@ -149,7 +149,7 @@ void think(Board                             &board,
         loadConfig();
 
     // If threads are pondering, stop them now and wait for them to finish
-    if (Search::Threads.main()->inPonder) {
+    if (Search::Threads.ctx.inPonder) {
         Search::Threads.stopThinking();
         Search::Threads.waitForIdle();
     }
@@ -161,8 +161,8 @@ void think(Board                             &board,
             std::lock_guard<std::mutex> lock(protocolMutex);
 #endif
 
-            sendActionAndUpdateBoard(Search::Threads.main()->resultAction,
-                                     Search::Threads.main()->bestMove);
+            sendActionAndUpdateBoard(Search::Threads.ctx.resultAction,
+                                     Search::Threads.ctx.bestMove);
             thinking = false;
         }
 
@@ -172,7 +172,7 @@ void think(Board                             &board,
             options.timeLeft = std::max(options.timeLeft - usedTime, (Time)0);
 
         // Start pondering search if needed
-        if (Search::Threads.main()->startPonderAfterThinking)
+        if (Search::Threads.ctx.startPonderAfterThinking)
             Search::Threads.startThinking(board, options, true);
     });
 }
@@ -1184,7 +1184,7 @@ void swap2board()
 void traceBoard()
 {
     Search::Threads.waitForIdle();
-    Search::Threads.main()->searchOptions = options;
+    Search::Threads.ctx.options = options;
     Search::Threads.main()->setBoardAndEvaluator(*board);
 
     std::string traceInfo  = Search::Threads.main()->board->trace();
@@ -1197,7 +1197,7 @@ void traceBoard()
 void traceSearch()
 {
     Search::Threads.waitForIdle();
-    Search::Threads.main()->searchOptions = options;
+    Search::Threads.ctx.options = options;
     Search::Threads.main()->setBoardAndEvaluator(*board);
     Board &board = *Search::Threads.main()->board;
 

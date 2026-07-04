@@ -410,7 +410,7 @@ void Command::selfplay(int argc, char *argv[])
 
             // Record best move result
             searchValue  = mainThread->rootMoves[0].value;
-            Pos bestMove = mainThread->bestMove;
+            Pos bestMove = Search::Threads.ctx.bestMove;
             gameEntry.moveSequence.push_back({bestMove, Eval(searchValue)});
             if (options.multiPV > 1) {
                 auto &moveData   = gameEntry.moveSequence.back();

@@ -34,7 +34,7 @@ namespace Search {
 void SearchPrinter::printSearchStarts(MainSearchThread &th, const TimeControl &tc)
 {
     if (Config::MessageMode == MsgMode::NORMAL) {
-        if (th.options().timeLimit && !th.inPonder) {
+        if (th.options().timeLimit && !th.threads.ctx.inPonder) {
             MESSAGEL("OptiTime " << timeText(tc.optimum()) << " | MaxTime "
                                  << timeText(tc.maximum()));
         }
@@ -48,7 +48,7 @@ void SearchPrinter::printEnteringMove(MainSearchThread  &th,
                                       Pos                move)
 {
     if (showRealtimeInLoop(th, tc, rootDepth) && !Config::AspirationWindow && pvIdx == 0
-        && !th.inPonder.load(std::memory_order_relaxed))
+        && !th.threads.ctx.inPonder.load(std::memory_order_relaxed))
         REALTIME("POS", move, th.board->size());
 }
 
@@ -59,7 +59,7 @@ void SearchPrinter::printLeavingMove(MainSearchThread  &th,
                                      Pos                move)
 {
     if (showRealtimeInLoop(th, tc, rootDepth) && !Config::AspirationWindow && pvIdx == 0
-        && !th.inPonder.load(std::memory_order_relaxed))
+        && !th.threads.ctx.inPonder.load(std::memory_order_relaxed))
         REALTIME("DONE", move, th.board->size());
 }
 
@@ -73,7 +73,7 @@ void SearchPrinter::printMoveResult(MainSearchThread  &th,
                                     bool               isNewBest)
 {
     if (showRealtimeInLoop(th, tc, rootDepth) && pvIdx == 0
-        && !th.inPonder.load(std::memory_order_relaxed)) {
+        && !th.threads.ctx.inPonder.load(std::memory_order_relaxed)) {
         if (moveValue <= VALUE_MATED_IN_MAX_PLY)
             REALTIME("LOST", move, th.board->size());
         else if (isNewBest)
@@ -99,7 +99,7 @@ void SearchPrinter::printPvCompletes(MainSearchThread  &th,
                                      int                numPv)
 {
     // Do not print search messages in ponder mode
-    if (th.inPonder.load(std::memory_order_relaxed))
+    if (th.threads.ctx.inPonder.load(std::memory_order_relaxed))
         return;
 
     uint64_t nodes = th.threads.nodesSearched();
@@ -148,7 +148,7 @@ void SearchPrinter::printPvCompletes(MainSearchThread  &th,
 void SearchPrinter::printDepthCompletes(MainSearchThread &th, const TimeControl &tc, int rootDepth)
 {
     if (Config::MessageMode == MsgMode::NORMAL) {
-        bool showPonder = th.inPonder.load(std::memory_order_relaxed);
+        bool showPonder = th.threads.ctx.inPonder.load(std::memory_order_relaxed);
 
         MESSAGEL((showPonder ? "[Pondering] " : "")
                  << "Depth " << rootDepth << "-" << th.rootMoves[0].selDepth << " | Eval "
@@ -162,7 +162,7 @@ void SearchPrinter::printRootMoves(MainSearchThread  &th,
                                    size_t             numRootMovesToDisplay)
 {
     // Do not print search messages in ponder mode
-    if (th.inPonder.load(std::memory_order_relaxed))
+    if (th.threads.ctx.inPonder.load(std::memory_order_relaxed))
         return;
 
     uint64_t nodes = th.threads.nodesSearched();
@@ -228,7 +228,7 @@ void SearchPrinter::printSearchEnds(MainSearchThread  &th,
     if (Config::MessageMode == MsgMode::NORMAL || Config::MessageMode == MsgMode::BRIEF) {
         uint64_t nodes      = th.threads.nodesSearched();
         uint64_t speed      = nodes * 1000 / std::max(tc.elapsed(), (Time)1);
-        bool     showPonder = th.inPonder.load(std::memory_order_relaxed);
+        bool     showPonder = th.threads.ctx.inPonder.load(std::memory_order_relaxed);
 
         MESSAGEL((showPonder ? "[Pondering] " : "")
                  << "Speed " << speedText(speed) << " | Depth " << rootDepth << "-"

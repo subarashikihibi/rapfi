@@ -40,21 +40,21 @@ void generateRootMoves(MainSearchThread &th)
 {
     auto addMoveToRootMoves = [&th](Pos m) {
         // Ignore blocked moves
-        if (std::count(th.searchOptions.blockMoves.begin(),
-                       th.searchOptions.blockMoves.end(),
+        if (std::count(th.options().blockMoves.begin(),
+                       th.options().blockMoves.end(),
                        m))
             return;
 
-        if (th.searchOptions.balanceMode == Search::SearchOptions::BALANCE_TWO) {
+        if (th.options().balanceMode == Search::SearchOptions::BALANCE_TWO) {
             // Use candidates before first move
             std::unordered_set<Pos> cands;
             FOR_EVERY_CAND_POS(th.board, pos)
             {
                 cands.insert(pos);
             }
-            th.board->move(th.searchOptions.rule, m);
+            th.board->move(th.options().rule, m);
             // Generate second move for balance2
-            MovePicker movePicker2(th.searchOptions.rule,
+            MovePicker movePicker2(th.options().rule,
                                    *th.board,
                                    MovePicker::ExtraArgs<MovePicker::ROOT> {});
             while (Pos m2 = movePicker2()) {
@@ -64,7 +64,7 @@ void generateRootMoves(MainSearchThread &th)
                     th.balance2Moves[bm] = th.rootMoves.size() - 1;
                 }
             }
-            th.board->undo(th.searchOptions.rule);
+            th.board->undo(th.options().rule);
         }
         else {
             th.rootMoves.emplace_back(m);
@@ -72,7 +72,7 @@ void generateRootMoves(MainSearchThread &th)
     };
 
     // Generate root moves for main search thread
-    MovePicker movePicker(th.searchOptions.rule,
+    MovePicker movePicker(th.options().rule,
                           *th.board,
                           MovePicker::ExtraArgs<MovePicker::ROOT> {});
     while (Pos m = movePicker()) {
@@ -80,7 +80,7 @@ void generateRootMoves(MainSearchThread &th)
     }
 
     // If all legal moves are blocked, we select all candidate moves as root moves
-    if (th.rootMoves.empty() && th.searchOptions.blockMoves.size() > 0) {
+    if (th.rootMoves.empty() && th.options().blockMoves.size() > 0) {
         std::unordered_set<Pos> cands;
         FOR_EVERY_CAND_POS(th.board, pos)
         {
@@ -93,7 +93,7 @@ void generateRootMoves(MainSearchThread &th)
     }
 
     // Filter root moves with symmetry (not for balance two)
-    if (th.searchOptions.balanceMode != Search::SearchOptions::BALANCE_TWO) {
+    if (th.options().balanceMode != Search::SearchOptions::BALANCE_TWO) {
         std::vector<Pos> rootMoveList;
         for (const auto &rm : th.rootMoves) {
             rootMoveList.push_back(rm.pv[0]);
@@ -117,6 +117,16 @@ void generateRootMoves(MainSearchThread &th)
 
 /// Global search thread pool
 ThreadPool Threads;
+
+void SearchContext::reset(const SearchOptions &opts, bool ponder)
+{
+    options                  = opts;
+    inPonder                 = ponder;
+    callsCnt                 = 0;
+    startPonderAfterThinking = false;
+    resultAction             = ActionType::Move;
+    bestMove                 = Pos::NONE;
+}
 
 SearchThread::SearchThread(ThreadPool &threadPool, uint32_t id)
     : numaId(Numa::DefaultNumaNodeId)
@@ -163,7 +173,7 @@ void SearchThread::runTask(std::function<void(SearchThread &)> task)
 {
 #ifdef MULTI_THREADING
     if (std::this_thread::get_id() == thread.get_id()) {
-        // We *are* the worker ⇒ enqueue "tail task" without waiting.
+        // We *are* the worker => enqueue "tail task" without waiting.
         std::lock_guard<std::mutex> lock(mutex);
         // at this point running is still true, we simply replace the functor
         taskFunc = std::move(task);
@@ -240,16 +250,6 @@ void SearchThread::clear()
     }
 }
 
-void MainSearchThread::clear()
-{
-    SearchThread::clear();
-    resultAction             = ActionType::Move;
-    bestMove                 = Pos::NONE;
-    callsCnt                 = 0;
-    startPonderAfterThinking = false;
-    inPonder                 = false;
-}
-
 void SearchThread::setBoardAndEvaluator(const Board &board)
 {
     // Reset board instance in this thread to be null
@@ -260,7 +260,7 @@ void SearchThread::setBoardAndEvaluator(const Board &board)
         evaluator.reset();
     else {
         const int  boardSize = board.size();
-        const Rule rule      = threads.main()->searchOptions.rule;
+        const Rule rule      = threads.ctx.options.rule;
 
         // Clear loaded evaluator that does not match
         if (evaluator && (evaluator->boardSize != boardSize || evaluator->rule != rule))
@@ -276,26 +276,28 @@ void SearchThread::setBoardAndEvaluator(const Board &board)
 
 void MainSearchThread::checkExit(uint32_t elapsedCalls)
 {
+    SearchContext &ctx = threads.ctx;
+
     // We only check exit condition after a number of calls.
     // This is to avoid expensive calculation in timeup condition checking.
-    if (callsCnt > elapsedCalls) {
-        callsCnt -= elapsedCalls;
+    if (ctx.callsCnt > elapsedCalls) {
+        ctx.callsCnt -= elapsedCalls;
         return;
     }
 
     // Resets callsCnt
-    if (searchOptions.maxNodes)
-        callsCnt = std::min(1024U, uint32_t(searchOptions.maxNodes / 1024U));
+    if (ctx.options.maxNodes)
+        ctx.callsCnt = std::min(1024U, uint32_t(ctx.options.maxNodes / 1024U));
     else
-        callsCnt = 1024;
+        ctx.callsCnt = 1024;
 
     // Do not stop searching in pondering mode
-    if (inPonder.load(std::memory_order_relaxed))
+    if (ctx.inPonder.load(std::memory_order_relaxed))
         return;
 
     // Check if we have reached node/time limits
-    if (searchOptions.maxNodes && threads.nodesSearched() >= searchOptions.maxNodes
-        || searchOptions.timeLimit && threads.searcher()->checkTimeupCondition()) {
+    if (ctx.options.maxNodes && threads.nodesSearched() >= ctx.options.maxNodes
+        || ctx.options.timeLimit && threads.searcher()->checkTimeupCondition()) {
         markPonderingAvailable();
         threads.stopThinking();
     }
@@ -303,8 +305,9 @@ void MainSearchThread::checkExit(uint32_t elapsedCalls)
 
 void MainSearchThread::markPonderingAvailable()
 {
-    if (searchOptions.pondering && !inPonder.load(std::memory_order_relaxed))
-        startPonderAfterThinking.store(true, std::memory_order_relaxed);
+    SearchContext &ctx = threads.ctx;
+    if (ctx.options.pondering && !ctx.inPonder.load(std::memory_order_relaxed))
+        ctx.startPonderAfterThinking.store(true, std::memory_order_relaxed);
 }
 
 void MainSearchThread::runCustomTaskAndWait(std::function<void(SearchThread &)> task,
@@ -414,10 +417,9 @@ void ThreadPool::startThinking(const Board          &board,
     waitForIdle();
     terminate = false;
 
-    // Clean up main thread state and copy options
+    // Reset the search context and clean up main thread state
+    ctx.reset(options, inPonder);
     main()->clear();
-    main()->searchOptions = options;
-    main()->inPonder      = inPonder;
 
     // Clone the input board to main thread and update evaluator
     main()->setBoardAndEvaluator(board);

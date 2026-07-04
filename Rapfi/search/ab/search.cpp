@@ -103,11 +103,12 @@ void ABSearcher::clear(ThreadPool &pool, bool clearAllMemory)
 
 void ABSearcher::searchMain(MainSearchThread &th)
 {
+    SearchContext &ctx  = th.threads.ctx;
     SearchOptions &opts = th.options();
 
     // Probe opening database and find if there is a prepared opening
     if (!opts.disableOpeningQuery
-        && Opening::probeOpening(*th.board, opts.rule, th.resultAction, th.bestMove)) {
+        && Opening::probeOpening(*th.board, opts.rule, ctx.resultAction, ctx.bestMove)) {
         th.markPonderingAvailable();
         return;
     }
@@ -117,7 +118,7 @@ void ABSearcher::searchMain(MainSearchThread &th)
         // If there is no stones on board, it is possible that the opponent played a pass
         // move at the start of one game. We just choose the center location to play.
         if (th.board->nonPassMoveCount() == 0) {
-            th.bestMove = th.board->centerPos();
+            ctx.bestMove = th.board->centerPos();
             return;
         }
 
@@ -125,7 +126,7 @@ void ABSearcher::searchMain(MainSearchThread &th)
         // point mate in Renju, or all legal points have been blocked.
         FOR_EVERY_EMPTY_POS(th.board, pos)
         {
-            th.bestMove = pos;
+            ctx.bestMove = pos;
             printer.printBestmoveWithoutSearch(th, pos, mated_in(0), 0, nullptr);
             return;
         }
@@ -136,7 +137,7 @@ void ABSearcher::searchMain(MainSearchThread &th)
     else if (th.board->p4Count(th.board->sideToMove(), A_FIVE)) {
         assert(th.board->cell(th.rootMoves[0].pv[0]).pattern4[th.board->sideToMove()] == A_FIVE);
         th.rootMoves[0].value = mate_in(1);
-        th.bestMove           = th.rootMoves[0].pv[0];
+        ctx.bestMove          = th.rootMoves[0].pv[0];
 
         printer.printBestmoveWithoutSearch(th,
                                            th.rootMoves[0].pv[0],
@@ -169,7 +170,7 @@ void ABSearcher::searchMain(MainSearchThread &th)
         }
 
         if (bestMove) {
-            th.bestMove = bestMove;
+            ctx.bestMove = bestMove;
             printer.printBestmoveWithoutSearch(th, bestMove, bestMoveValue, 0, nullptr);
             return;
         }
@@ -203,7 +204,7 @@ void ABSearcher::searchMain(MainSearchThread &th)
         }
         // If database winning move is not in rootmoves, return it directly
         else {
-            th.bestMove = dbWinMove;
+            ctx.bestMove = dbWinMove;
             printer.printBestmoveWithoutSearch(th, dbWinMove, dbWinValue, dbWinDepth, nullptr);
             return;
         }
@@ -216,20 +217,20 @@ void ABSearcher::searchMain(MainSearchThread &th)
                             *bestThread);
 
     // Do not record bestmove in pondering
-    if (th.inPonder)
+    if (ctx.inPonder)
         return;
 
     // Record best move
-    th.bestMove = bestThread->rootMoves[0].pv[0];
+    ctx.bestMove = bestThread->rootMoves[0].pv[0];
 
     // If swap check is needed, make swap decision according to the rule
     if (opts.swapable)
-        th.resultAction =
+        ctx.resultAction =
             Opening::decideAction(*th.board, opts.rule, bestThread->rootMoves[0].value);
     else if (opts.balanceMode == SearchOptions::BalanceMode::BALANCE_TWO)
-        th.resultAction = ActionType::Move2;
+        ctx.resultAction = ActionType::Move2;
     else
-        th.resultAction = ActionType::Move;
+        ctx.resultAction = ActionType::Move;
 }
 
 void ABSearcher::search(SearchThread &th)
@@ -327,7 +328,7 @@ void ABSearcher::search(SearchThread &th)
             firstSingularDepth = sd.rootDepth;
 
         // Stop thinking if we are not in analysis mode, inPonder mode, or random move mode
-        if (!options.isAnalysisMode() && !th.threads.main()->inPonder && !rmp.enabled()) {
+        if (!options.isAnalysisMode() && !th.threads.ctx.inPonder && !rmp.enabled()) {
             if (isMate && sd.rootDepth - firstMateDepth >= Config::NumIterationAfterMate)
                 th.threads.stopThinking();
             else if (sd.singularRoot
@@ -358,7 +359,7 @@ void ABSearcher::search(SearchThread &th)
                                    previousTimeReduction,
                                    totalBestMoveChanges / th.threads.size()},
                                   timeReduction)
-                && !mainThread->inPonder) {
+                && !th.threads.ctx.inPonder) {
                 // Start pondering after foreground searching naturally ended
                 mainThread->markPonderingAvailable();
                 th.threads.stopThinking();
