@@ -475,8 +475,8 @@ void Config::readModel(const cpptoml::table &t)
     else {
         // Read Eval & Score
         if (auto eval = t.get_table("eval")) {
-            bool hasAsymmetryRenjuEval = false;
             for (Rule r : Rules) {
+                bool hasAsymmetryRenjuEval = false;
                 auto setEvalBlack = [r](PatternCode pcode, Eval ev) {
                     EVALS[r + BLACK][pcode] = ev;
                 };
@@ -523,8 +523,8 @@ void Config::readModel(const cpptoml::table &t)
                                                        P4SCORES[tableIdx][pcode][1] = score;
                                                    });
             };
-            bool hasAsymmetryRenjuScore = false;
             for (Rule r : Rules) {
+                bool hasAsymmetryRenjuScore = false;
                 auto ruleScore = score->get_table(RuleName[r]);
                 if (!ruleScore)  // fallback
                     ruleScore = score;
