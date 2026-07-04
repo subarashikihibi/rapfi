@@ -72,6 +72,16 @@ struct SearchContext
 
     /// Reset the context for a new search (the startThinking path).
     void reset(const SearchOptions &opts, bool ponder);
+    /// Check exit condition (time/nodes) and set the pool's terminate flag.
+    /// Main search thread only; throttled by callsCnt.
+    void checkExit(uint32_t elapsedCalls = 1);
+    /// Mark pondering available for the last finished searching.
+    void markPonderingAvailable();
+
+private:
+    friend class ThreadPool;
+    /// Back-reference to the owning thread pool (set at pool construction).
+    ThreadPool *pool = nullptr;
 };
 
 /// SearchThread is the base class for all search algorithms. It contains per-thread
@@ -162,16 +172,6 @@ class MainSearchThread : public SearchThread
 {
 public:
     MainSearchThread(ThreadPool &threadPool) : SearchThread::SearchThread(threadPool, 0) {}
-
-    /// Check exit condition (time/nodes) and set ThreadPool's terminate flag.
-    /// @return True if we should stop the search now.
-    void checkExit(uint32_t elapsedCalls = 1);
-    /// Mark pondering available for the last finished searching.
-    void markPonderingAvailable();
-    /// Start a custom task with all threads and wait for them to finish.
-    /// @param task The custom task to run in each thread.
-    /// @param includeSelf If true, the main thread will also run the task.
-    void runCustomTaskAndWait(std::function<void(SearchThread &)> task, bool includeSelf);
 };
 
 /// ThreadPool class is the container for all search threads. The first
@@ -226,6 +226,13 @@ public:
     void setupDatabase(std::unique_ptr<Database::DBStorage> dbStorage);
     /// Setup evaluator maker for future evaluator creation.
     void setupEvaluator(std::function<EvaluatorMaker> evaluatorMaker);
+    /// Run a custom task on all threads and wait for them to finish.
+    /// @param task The custom task to run in each thread.
+    /// @param includeSelf If true, the task also runs in the calling thread
+    ///     (passing the main thread); requires being called from the main
+    ///     search thread's context. In single-thread builds this degenerates
+    ///     to running the task synchronously iff includeSelf.
+    void runOnAllThreads(std::function<void(SearchThread &)> task, bool includeSelf);
     /// Start multi-threaded thinking for the given position.
     /// @param board The position to start searching.
     /// @param options Options of this search.

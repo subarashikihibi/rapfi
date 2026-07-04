@@ -884,8 +884,7 @@ void MCTSSearcher::clear(ThreadPool &pool, bool clearAllMemory)
     // Clear the node table using all threads, and wait for finish
     pool.main()->runTask([this](SearchThread &th) {
         std::atomic<size_t> numShardsProcessed = 0;
-        MainSearchThread   &mainThread         = static_cast<MainSearchThread &>(th);
-        mainThread.runCustomTaskAndWait(
+        th.threads.runOnAllThreads(
             [this, &numShardsProcessed](SearchThread &t) {
                 for (;;) {
                     size_t shardIdx = numShardsProcessed.fetch_add(1, std::memory_order_relaxed);
@@ -915,7 +914,7 @@ void MCTSSearcher::searchMain(MainSearchThread &th)
     // Probe opening database and find if there is a prepared opening
     if (!opts.disableOpeningQuery
         && Opening::probeOpening(board, opts.rule, ctx.resultAction, ctx.bestMove)) {
-        th.markPonderingAvailable();
+        ctx.markPonderingAvailable();
         return;
     }
 
@@ -965,7 +964,7 @@ void MCTSSearcher::searchMain(MainSearchThread &th)
     // Starts worker threads, then starts main thread
     printer.printSearchStarts(th, timectl);
     setupRootNode(th);  // Setup root node and other stuffs
-    th.runCustomTaskAndWait([this](SearchThread &t) { search(t); }, true);
+    th.threads.runOnAllThreads([this](SearchThread &t) { search(t); }, true);
 
     // Rank root moves and record best move
     updateRootMovesData(th);
@@ -1012,7 +1011,7 @@ void MCTSSearcher::search(SearchThread &th)
 
         if (th.isMainThread()) {
             MainSearchThread &mainThread = static_cast<MainSearchThread &>(th);
-            mainThread.checkExit(std::max(newNumNodes, 64u));
+            th.threads.ctx.checkExit(std::max(newNumNodes, 64u));
 
             bool printRootMoves = false;
             if (Config::NodesToPrintMCTSRootmoves > 0) {
@@ -1108,7 +1107,7 @@ void MCTSSearcher::recycleOldNodes(MainSearchThread &th)
     };
 
     // Mark all reachable nodes from the root node
-    th.runCustomTaskAndWait(
+    th.threads.runOnAllThreads(
         [this, &f](SearchThread &t) {
             PRNG prng(Hash::LCHash(t.id));
             recursiveApply(*this->root, &f, t.id ? &prng : nullptr, this->globalNodeAge);
@@ -1118,7 +1117,7 @@ void MCTSSearcher::recycleOldNodes(MainSearchThread &th)
     // Remove all unreachable nodes
     std::atomic<size_t> numShardsProcessed = 0;
 
-    th.runCustomTaskAndWait(
+    th.threads.runOnAllThreads(
         [this, &numRecycledNodes, &numShardsProcessed](SearchThread &t) {
             for (;;) {
                 size_t shardIdx = numShardsProcessed.fetch_add(1, std::memory_order_relaxed);

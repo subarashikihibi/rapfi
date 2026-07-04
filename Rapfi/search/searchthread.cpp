@@ -274,58 +274,54 @@ void SearchThread::setBoardAndEvaluator(const Board &board)
     this->board = std::make_unique<Board>(board, this);
 }
 
-void MainSearchThread::checkExit(uint32_t elapsedCalls)
+void SearchContext::checkExit(uint32_t elapsedCalls)
 {
-    SearchContext &ctx = threads.ctx;
-
     // We only check exit condition after a number of calls.
     // This is to avoid expensive calculation in timeup condition checking.
-    if (ctx.callsCnt > elapsedCalls) {
-        ctx.callsCnt -= elapsedCalls;
+    if (callsCnt > elapsedCalls) {
+        callsCnt -= elapsedCalls;
         return;
     }
 
     // Resets callsCnt
-    if (ctx.options.maxNodes)
-        ctx.callsCnt = std::min(1024U, uint32_t(ctx.options.maxNodes / 1024U));
+    if (options.maxNodes)
+        callsCnt = std::min(1024U, uint32_t(options.maxNodes / 1024U));
     else
-        ctx.callsCnt = 1024;
+        callsCnt = 1024;
 
     // Do not stop searching in pondering mode
-    if (ctx.inPonder.load(std::memory_order_relaxed))
+    if (inPonder.load(std::memory_order_relaxed))
         return;
 
     // Check if we have reached node/time limits
-    if (ctx.options.maxNodes && threads.nodesSearched() >= ctx.options.maxNodes
-        || ctx.options.timeLimit && threads.searcher()->checkTimeupCondition()) {
+    if (options.maxNodes && pool->nodesSearched() >= options.maxNodes
+        || options.timeLimit && pool->searcher()->checkTimeupCondition()) {
         markPonderingAvailable();
-        threads.stopThinking();
+        pool->stopThinking();
     }
 }
 
-void MainSearchThread::markPonderingAvailable()
+void SearchContext::markPonderingAvailable()
 {
-    SearchContext &ctx = threads.ctx;
-    if (ctx.options.pondering && !ctx.inPonder.load(std::memory_order_relaxed))
-        ctx.startPonderAfterThinking.store(true, std::memory_order_relaxed);
+    if (options.pondering && !inPonder.load(std::memory_order_relaxed))
+        startPonderAfterThinking.store(true, std::memory_order_relaxed);
 }
 
-void MainSearchThread::runCustomTaskAndWait(std::function<void(SearchThread &)> task,
-                                            bool                                includeSelf)
+void ThreadPool::runOnAllThreads(std::function<void(SearchThread &)> task, bool includeSelf)
 {
     if (!task)
         return;
 
     // Run task in non-main threads
-    for (size_t i = 1; i < threads.size(); i++)
-        threads[i]->runTask(task);
+    for (size_t i = 1; i < size(); i++)
+        (*this)[i]->runTask(task);
 
-    // Run task in main thread
+    // Run task in the calling (main) thread
     if (includeSelf)
-        task(*this);
+        task(*main());
 
     // Wait for all other threads to finish
-    threads.waitForIdle();
+    waitForIdle();
 }
 
 void ThreadPool::waitForIdle()
@@ -431,7 +427,7 @@ void ThreadPool::startThinking(const Board          &board,
     generateRootMoves(*main());
 
     // Launch a small task to clear threads state and copy state from main thread
-    main()->runCustomTaskAndWait(
+    runOnAllThreads(
         [mainTh = main()](SearchThread &th) {
             th.clear();
             th.setBoardAndEvaluator(*mainTh->board);
@@ -459,6 +455,8 @@ void ThreadPool::clear(bool clearAllMemory)
 
 ThreadPool::ThreadPool()
 {
+    ctx.pool = this;
+
     // Set default searcher
     setupSearcher(Config::createSearcher());
 }

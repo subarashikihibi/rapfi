@@ -109,7 +109,7 @@ void ABSearcher::searchMain(MainSearchThread &th)
     // Probe opening database and find if there is a prepared opening
     if (!opts.disableOpeningQuery
         && Opening::probeOpening(*th.board, opts.rule, ctx.resultAction, ctx.bestMove)) {
-        th.markPonderingAvailable();
+        ctx.markPonderingAvailable();
         return;
     }
 
@@ -185,7 +185,7 @@ void ABSearcher::searchMain(MainSearchThread &th)
 
     // Starts worker threads, then starts main thread
     printer.printSearchStarts(th, timectl);
-    th.runCustomTaskAndWait([this](SearchThread &t) { search(t); }, true);
+    th.threads.runOnAllThreads([this](SearchThread &t) { search(t); }, true);
 
     // Select best thread according to eval and completed depth when needed
     SearchThread *bestThread = &th;
@@ -334,7 +334,7 @@ void ABSearcher::search(SearchThread &th)
             else if (sd.singularRoot
                      && sd.rootDepth - firstSingularDepth
                             >= Config::NumIterationAfterSingularRoot) {
-                th.threads.main()->markPonderingAvailable();
+                th.threads.ctx.markPonderingAvailable();
                 th.threads.stopThinking();
             }
         }
@@ -361,7 +361,7 @@ void ABSearcher::search(SearchThread &th)
                                   timeReduction)
                 && !th.threads.ctx.inPonder) {
                 // Start pondering after foreground searching naturally ended
-                mainThread->markPonderingAvailable();
+                th.threads.ctx.markPonderingAvailable();
                 th.threads.stopThinking();
             }
         }
@@ -1077,7 +1077,7 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
         // Step 2. Check for aborted search and immediate draw
         // Check if we reach the time limit
         if (thisThread->isMainThread())
-            static_cast<MainSearchThread *>(thisThread)->checkExit();
+            thisThread->threads.ctx.checkExit();
 
         // Check if the board has been filled or we have reached the max game ply.
         if (board.movesLeft() == 0 || board.nonPassMoveCount() >= options.maxMoves)
@@ -1679,7 +1679,7 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
     // Step 2. Check for immediate draw and winning
     // Check if we reach the time limit
     if (thisThread->isMainThread())
-        static_cast<MainSearchThread *>(thisThread)->checkExit();
+        thisThread->threads.ctx.checkExit();
 
     // Check if the board has been filled or we have reached the max game ply.
     if (board.movesLeft() == 0 || board.nonPassMoveCount() >= thisThread->options().maxMoves)
