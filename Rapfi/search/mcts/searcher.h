@@ -34,10 +34,6 @@ namespace Search::MCTS {
 class MCTSSearcher : public Searcher
 {
 public:
-    /// Time controller
-    TimeControl timectl;
-    /// Printer for all search messages
-    SearchPrinter printer;
     /// The node table for storing and finding all transposition nodes
     std::unique_ptr<NodeTable> nodeTable;
     /// The root node of the MCTS tree
@@ -76,7 +72,7 @@ public:
     void search(SearchThread &th) override;
 
     /// Checks if current search reaches timeup condition.
-    bool checkTimeupCondition() override;
+    bool checkTimeupCondition(const TimeControl &timectl) override;
 
 private:
     /// Setup root node for the search

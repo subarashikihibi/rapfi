@@ -24,6 +24,7 @@
 #include "../eval/evaluator.h"
 #include "searchcommon.h"
 #include "searcher.h"
+#include "searchoutput.h"
 #include "timecontrol.h"
 
 #include <atomic>
@@ -58,6 +59,10 @@ struct SearchContext
     std::atomic_bool inPonder;
 
     // --- Shared per-search state ---
+    /// Time controller of this search (init'd once per search)
+    TimeControl timectl;
+    /// Printer for all search messages (main search thread only)
+    SearchPrinter printer;
     /// Calls count before exit condition check (main search thread only)
     uint32_t callsCnt;
     /// Should we start pondering after finishing this move?

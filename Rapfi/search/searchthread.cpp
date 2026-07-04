@@ -295,7 +295,7 @@ void SearchContext::checkExit(uint32_t elapsedCalls)
 
     // Check if we have reached node/time limits
     if (options.maxNodes && pool->nodesSearched() >= options.maxNodes
-        || options.timeLimit && pool->searcher()->checkTimeupCondition()) {
+        || options.timeLimit && pool->searcher()->checkTimeupCondition(timectl)) {
         markPonderingAvailable();
         pool->stopThinking();
     }

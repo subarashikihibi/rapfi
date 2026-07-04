@@ -53,11 +53,6 @@ struct ABSearchData : SearchData
 class ABSearcher : public Searcher
 {
 public:
-    /// Time controller
-    TimeControl timectl;
-    /// Printer for all search messages
-    SearchPrinter printer;
-
     // Time management information
     float previousTimeReduction;  // (keep for one game)
     Value previousBestValue;      // (keep for one game)
@@ -89,7 +84,7 @@ public:
     void search(SearchThread &th) override;
 
     /// Checks if current search reaches timeup condition.
-    bool checkTimeupCondition() override;
+    bool checkTimeupCondition(const TimeControl &timectl) override;
 
 private:
     /// Choose the next search depth by checking completed depth of all other

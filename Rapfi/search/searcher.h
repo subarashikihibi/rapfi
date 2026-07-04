@@ -24,6 +24,7 @@ namespace Search {
 
 class SearchThread;  // forward declaration
 class ThreadPool;    // forward declaration
+class TimeControl;   // forward declaration
 
 struct SearchData
 {
@@ -61,9 +62,11 @@ public:
     /// Worker-thread search entry point. This function is called by each worker thread.
     virtual void search(SearchThread &th) = 0;
 
-    /// Checks if a search reaches timeup condition.
+    /// Checks if a search reaches timeup condition. The timeup policy differs
+    /// per algorithm (AB stops at maximum; MCTS stops at optimum).
+    /// @param timectl The time controller of the current search context.
     /// @return True if time is up, otherwise false.
-    virtual bool checkTimeupCondition() = 0;
+    virtual bool checkTimeupCondition(const TimeControl &timectl) = 0;
 };
 
 }  // namespace Search

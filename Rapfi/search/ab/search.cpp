@@ -127,7 +127,7 @@ void ABSearcher::searchMain(SearchThread &th)
         FOR_EVERY_EMPTY_POS(th.board, pos)
         {
             ctx.bestMove = pos;
-            printer.printBestmoveWithoutSearch(th, pos, mated_in(0), 0, nullptr);
+            ctx.printer.printBestmoveWithoutSearch(th, pos, mated_in(0), 0, nullptr);
             return;
         }
 
@@ -139,11 +139,11 @@ void ABSearcher::searchMain(SearchThread &th)
         th.rootMoves[0].value = mate_in(1);
         ctx.bestMove          = th.rootMoves[0].pv[0];
 
-        printer.printBestmoveWithoutSearch(th,
-                                           th.rootMoves[0].pv[0],
-                                           th.rootMoves[0].value,
-                                           1,
-                                           &th.rootMoves[0].pv);
+        ctx.printer.printBestmoveWithoutSearch(th,
+                                               th.rootMoves[0].pv[0],
+                                               th.rootMoves[0].value,
+                                               1,
+                                               &th.rootMoves[0].pv);
         return;
     }
 
@@ -171,20 +171,20 @@ void ABSearcher::searchMain(SearchThread &th)
 
         if (bestMove) {
             ctx.bestMove = bestMove;
-            printer.printBestmoveWithoutSearch(th, bestMove, bestMoveValue, 0, nullptr);
+            ctx.printer.printBestmoveWithoutSearch(th, bestMove, bestMoveValue, 0, nullptr);
             return;
         }
     }
 
     // Init time management and transposition table
-    timectl.init(opts.turnTime,
-                 opts.matchTime,
-                 opts.timeLeft,
-                 {th.board->ply(), th.board->movesLeft()});
+    ctx.timectl.init(opts.turnTime,
+                     opts.matchTime,
+                     opts.timeLeft,
+                     {th.board->ply(), th.board->movesLeft()});
     TT.incGeneration();
 
     // Starts worker threads, then starts main thread
-    printer.printSearchStarts(th, timectl);
+    ctx.printer.printSearchStarts(th, ctx.timectl);
     th.threads.runOnAllThreads([this](SearchThread &t) { search(t); }, true);
 
     // Select best thread according to eval and completed depth when needed
@@ -205,16 +205,16 @@ void ABSearcher::searchMain(SearchThread &th)
         // If database winning move is not in rootmoves, return it directly
         else {
             ctx.bestMove = dbWinMove;
-            printer.printBestmoveWithoutSearch(th, dbWinMove, dbWinValue, dbWinDepth, nullptr);
+            ctx.printer.printBestmoveWithoutSearch(th, dbWinMove, dbWinValue, dbWinDepth, nullptr);
             return;
         }
     }
 
     // Output search statistic infomation
-    printer.printSearchEnds(th,
-                            timectl,
-                            bestThread->searchDataAs<ABSearchData>()->completedDepth,
-                            *bestThread);
+    ctx.printer.printSearchEnds(th,
+                                ctx.timectl,
+                                bestThread->searchDataAs<ABSearchData>()->completedDepth,
+                                *bestThread);
 
     // Do not record bestmove in pondering
     if (ctx.inPonder)
@@ -236,6 +236,7 @@ void ABSearcher::searchMain(SearchThread &th)
 void ABSearcher::search(SearchThread &th)
 {
     ABSearchData     &sd        = *th.searchDataAs<ABSearchData>();
+    SearchContext    &ctx       = th.threads.ctx;
     SearchOptions    &options   = th.options();
     Value             initValue = Evaluation::evaluate(*th.board, options.rule);
     StackArray        stackArray(MAX_PLY, initValue);
@@ -264,7 +265,7 @@ void ABSearcher::search(SearchThread &th)
     for (sd.rootDepth = startDepth; sd.rootDepth <= maxDepth && !th.threads.isTerminating();
          sd.rootDepth = pickNextDepth(th.threads, th.id, sd.rootDepth)) {
         // Sync modifications in database client to database storage
-        if (th.dbClient && timectl.elapsed() > 5000)
+        if (th.dbClient && ctx.timectl.elapsed() > 5000)
             th.dbClient->sync(false);
 
         // Age out PV variability metric when depth increases
@@ -291,7 +292,8 @@ void ABSearcher::search(SearchThread &th)
 
             // Send out various infomation to GUI
             if (mainThread)
-                printer.printPvCompletes(*mainThread, timectl, sd.rootDepth, sd.pvIdx, sd.multiPv);
+                ctx.printer
+                    .printPvCompletes(*mainThread, ctx.timectl, sd.rootDepth, sd.pvIdx, sd.multiPv);
 
             // Sort the PV lines searched so far. When we are in balance move mode,
             // sort according to negetive absolute value rather than its original value.
@@ -328,20 +330,20 @@ void ABSearcher::search(SearchThread &th)
             firstSingularDepth = sd.rootDepth;
 
         // Stop thinking if we are not in analysis mode, inPonder mode, or random move mode
-        if (!options.isAnalysisMode() && !th.threads.ctx.inPonder && !rmp.enabled()) {
+        if (!options.isAnalysisMode() && !ctx.inPonder && !rmp.enabled()) {
             if (isMate && sd.rootDepth - firstMateDepth >= Config::NumIterationAfterMate)
                 th.threads.stopThinking();
             else if (sd.singularRoot
                      && sd.rootDepth - firstSingularDepth
                             >= Config::NumIterationAfterSingularRoot) {
-                th.threads.ctx.markPonderingAvailable();
+                ctx.markPonderingAvailable();
                 th.threads.stopThinking();
             }
         }
 
         // Send out search result of this depth
         if (mainThread)
-            printer.printDepthCompletes(*mainThread, timectl, sd.completedDepth);
+            ctx.printer.printDepthCompletes(*mainThread, ctx.timectl, sd.completedDepth);
 
         // Check do we have time for the next iteration?
         if (options.timeLimit && !th.threads.isTerminating()) {
@@ -352,16 +354,16 @@ void ABSearcher::search(SearchThread &th)
             }
 
             // Stop the search if exceeds time limit (do not stop in inPonder mode)
-            if (timectl.checkStop({sd.rootDepth,
-                                   lastMoveChangeDepth,
-                                   bestValue,
-                                   previousBestValue,
-                                   previousTimeReduction,
-                                   totalBestMoveChanges / th.threads.size()},
-                                  timeReduction)
-                && !th.threads.ctx.inPonder) {
+            if (ctx.timectl.checkStop({sd.rootDepth,
+                                       lastMoveChangeDepth,
+                                       bestValue,
+                                       previousBestValue,
+                                       previousTimeReduction,
+                                       totalBestMoveChanges / th.threads.size()},
+                                      timeReduction)
+                && !ctx.inPonder) {
                 // Start pondering after foreground searching naturally ended
-                th.threads.ctx.markPonderingAvailable();
+                ctx.markPonderingAvailable();
                 th.threads.stopThinking();
             }
         }
@@ -386,7 +388,7 @@ void ABSearcher::search(SearchThread &th)
     }
 }
 
-bool ABSearcher::checkTimeupCondition()
+bool ABSearcher::checkTimeupCondition(const TimeControl &timectl)
 {
     return timectl.elapsed() >= timectl.maximum();
 }
@@ -465,11 +467,11 @@ namespace {
 /// of a fail high/low, re-search with a bigger window until we don't fail high/low anymore.
 void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue, Depth depth)
 {
-    Value         delta, alpha, beta;
-    SearchThread *thisThread  = board.thisThread();
-    ABSearchData *searchData  = thisThread->searchDataAs<ABSearchData>();
-    ABSearcher   *searcher    = static_cast<ABSearcher *>(thisThread->threads.searcher());
-    int           failHighCnt = 0;
+    Value          delta, alpha, beta;
+    SearchThread  *thisThread  = board.thisThread();
+    ABSearchData  *searchData  = thisThread->searchDataAs<ABSearchData>();
+    SearchContext &ctx         = thisThread->threads.ctx;
+    int            failHighCnt = 0;
 
     // Reset aspiration window starting size if aspiration windows is enabled and
     // we are not in balance move mode. (no aspiration window for balance move mode).
@@ -517,13 +519,13 @@ void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue,
 
         // Print value out of window result
         if (value <= alpha || value >= beta)
-            searcher->printer.printOutOfWindowResult(*thisThread,
-                                                     searcher->timectl,
-                                                     searchData->rootDepth,
-                                                     searchData->pvIdx,
-                                                     searchData->multiPv,
-                                                     alpha,
-                                                     beta);
+            ctx.printer.printOutOfWindowResult(*thisThread,
+                                               ctx.timectl,
+                                               searchData->rootDepth,
+                                               searchData->pvIdx,
+                                               searchData->multiPv,
+                                               alpha,
+                                               beta);
 
         // In case of failing low/high increase aspiration window and re-search,
         // otherwise exit the loop.
@@ -1246,10 +1248,9 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
 
     // When opponent is doing A_FIVE attack, search starts from here
 moves_loop:
-    ABSearcher  *searcher    = static_cast<ABSearcher *>(thisThread->threads.searcher());
-    TimeControl &timectl     = searcher->timectl;
-    uint64_t     curNumNodes = 0;
-    ss->dbChildWritten       = false;
+    SearchContext &ctx         = thisThread->threads.ctx;
+    uint64_t       curNumNodes = 0;
+    ss->dbChildWritten         = false;
 
     // Calculate a complexity metric for current position
     float complexity = positionComplexity(board, self, oppo);
@@ -1306,11 +1307,11 @@ moves_loop:
         }
 
         if (RootNode && thisThread->isMainThread())
-            searcher->printer.printEnteringMove(*thisThread,
-                                                timectl,
-                                                searchData->pvIdx,
-                                                searchData->rootDepth,
-                                                move);
+            ctx.printer.printEnteringMove(*thisThread,
+                                          ctx.timectl,
+                                          searchData->pvIdx,
+                                          searchData->rootDepth,
+                                          move);
 
         // Initialize heruistic information
         ss->moveCount     = ++moveCount;
@@ -1497,11 +1498,11 @@ moves_loop:
         board.undo<Rule>();
 
         if (RootNode && thisThread->isMainThread())
-            searcher->printer.printLeavingMove(*thisThread,
-                                               timectl,
-                                               searchData->pvIdx,
-                                               searchData->rootDepth,
-                                               move);
+            ctx.printer.printLeavingMove(*thisThread,
+                                         ctx.timectl,
+                                         searchData->pvIdx,
+                                         searchData->rootDepth,
+                                         move);
 
         // Step 18. Check for a new best move
         // Finished searching the move. If a stop occurred, the return value of the search cannot
@@ -1568,14 +1569,14 @@ moves_loop:
         }
 
         if (RootNode && thisThread->isMainThread())
-            searcher->printer.printMoveResult(*thisThread,
-                                              timectl,
-                                              searchData->pvIdx,
-                                              searchData->multiPv,
-                                              searchData->rootDepth,
-                                              move,
-                                              value,
-                                              bestMove == move);
+            ctx.printer.printMoveResult(*thisThread,
+                                        ctx.timectl,
+                                        searchData->pvIdx,
+                                        searchData->multiPv,
+                                        searchData->rootDepth,
+                                        move,
+                                        value,
+                                        bestMove == move);
 
         // Record good moves that improved alpha bound for move heuristic.
         histTracker.addSearchedMove(move, bestMove);

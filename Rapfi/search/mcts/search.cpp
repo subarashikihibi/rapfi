@@ -932,7 +932,7 @@ void MCTSSearcher::searchMain(SearchThread &th)
         FOR_EVERY_EMPTY_POS(th.board, pos)
         {
             ctx.bestMove = pos;
-            printer.printBestmoveWithoutSearch(th, pos, mated_in(0), 0, nullptr);
+            ctx.printer.printBestmoveWithoutSearch(th, pos, mated_in(0), 0, nullptr);
             return;
         }
 
@@ -953,22 +953,22 @@ void MCTSSearcher::searchMain(SearchThread &th)
             ctx.bestMove     = pos;
             ctx.resultAction = ActionType::Move;
             ERRORL("Evaluator is not enabled, cannot use mcts search.");
-            printer.printBestmoveWithoutSearch(th, pos, mated_in(0), 0, nullptr);
+            ctx.printer.printBestmoveWithoutSearch(th, pos, mated_in(0), 0, nullptr);
             return;
         }
     }
 
     // Init time management and transposition table
-    timectl.init(opts.turnTime, opts.matchTime, opts.timeLeft, {board.ply(), board.movesLeft()});
+    ctx.timectl.init(opts.turnTime, opts.matchTime, opts.timeLeft, {board.ply(), board.movesLeft()});
 
     // Starts worker threads, then starts main thread
-    printer.printSearchStarts(th, timectl);
+    ctx.printer.printSearchStarts(th, ctx.timectl);
     setupRootNode(th);  // Setup root node and other stuffs
     th.threads.runOnAllThreads([this](SearchThread &t) { search(t); }, true);
 
     // Rank root moves and record best move
     updateRootMovesData(th);
-    printer.printRootMoves(th, timectl, numSelectableRootMoves);
+    ctx.printer.printRootMoves(th, ctx.timectl, numSelectableRootMoves);
 
     // Do not record bestmove in pondering
     if (ctx.inPonder)
@@ -1033,7 +1033,9 @@ void MCTSSearcher::search(SearchThread &th)
 
             if (printRootMoves) {
                 updateRootMovesData(th);
-                printer.printRootMoves(th, timectl, numSelectableRootMoves);
+                th.threads.ctx.printer.printRootMoves(th,
+                                                      th.threads.ctx.timectl,
+                                                      numSelectableRootMoves);
             }
 
             if (th.rootMoves.size() == 1
@@ -1043,7 +1045,7 @@ void MCTSSearcher::search(SearchThread &th)
     }
 }
 
-bool MCTSSearcher::checkTimeupCondition()
+bool MCTSSearcher::checkTimeupCondition(const TimeControl &timectl)
 {
     if (timectl.elapsed() >= timectl.maximum())
         return true;
