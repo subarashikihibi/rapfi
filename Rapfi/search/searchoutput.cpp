@@ -26,7 +26,7 @@
 #include "timecontrol.h"
 
 #define REALTIME(type, pos, size) \
-    MESSAGEL("REALTIME " << (type) << ' ' << (CoordText {pos, size, Config::IOCoordMode}))
+    MESSAGEL("REALTIME " << (type) << ' ' << (CoordText {pos, size, Config::GeneralCfg.ioCoordMode}))
 
 #define INFO(type, ...) sync_cout() << "INFO " << type << ' ' << __VA_ARGS__ << std::endl
 
@@ -34,7 +34,7 @@ namespace Search {
 
 void SearchPrinter::printSearchStarts(SearchThread &th, const TimeControl &tc)
 {
-    if (Config::MessageMode == MsgMode::NORMAL) {
+    if (Config::GeneralCfg.messageMode == MsgMode::NORMAL) {
         if (th.options().timeLimit && !th.engine.ctx.inPonder) {
             MESSAGEL("OptiTime " << timeText(tc.optimum()) << " | MaxTime "
                                  << timeText(tc.maximum()));
@@ -120,14 +120,14 @@ void SearchPrinter::printPvCompletes(SearchThread      &th,
             INFO("EVAL", curMove.value);
             INFO("WINRATE", Evaluation::valueToWinRate(curMove.value));
             INFO("BESTLINE",
-                 MovesText {curMove.pv, true, true, th.board->size(), Config::IOCoordMode});
+                 MovesText {curMove.pv, true, true, th.board->size(), Config::GeneralCfg.ioCoordMode});
             INFO("PV", "DONE");
         }
 
-        if (numPv > 1 && Config::MessageMode == MsgMode::NORMAL)
+        if (numPv > 1 && Config::GeneralCfg.messageMode == MsgMode::NORMAL)
             MESSAGEL("(" << pvIdx + 1 << ") " << curMove.value << " | " << rootDepth << "-"
                          << curMove.selDepth << " | " << MovesText {curMove.pv});
-        else if (Config::MessageMode == MsgMode::UCILIKE) {
+        else if (Config::GeneralCfg.messageMode == MsgMode::UCILIKE) {
             if (numPv > 1)
                 MESSAGEL("depth " << rootDepth << "-" << curMove.selDepth << " multipv "
                                   << pvIdx + 1 << " ev " << curMove.value << " n "
@@ -148,7 +148,7 @@ void SearchPrinter::printPvCompletes(SearchThread      &th,
 
 void SearchPrinter::printDepthCompletes(SearchThread &th, const TimeControl &tc, int rootDepth)
 {
-    if (Config::MessageMode == MsgMode::NORMAL) {
+    if (Config::GeneralCfg.messageMode == MsgMode::NORMAL) {
         bool showPonder = th.engine.ctx.inPonder.load(std::memory_order_relaxed);
 
         MESSAGEL((showPonder ? "[Pondering] " : "")
@@ -188,7 +188,7 @@ void SearchPrinter::printRootMoves(SearchThread      &th,
             INFO("STDEV", curMove.utilityStdev);
             INFO("LCBVALUE", curMove.lcbValue);
             INFO("BESTLINE",
-                 MovesText {curMove.pv, true, true, th.board->size(), Config::IOCoordMode});
+                 MovesText {curMove.pv, true, true, th.board->size(), Config::GeneralCfg.ioCoordMode});
             INFO("PV", "DONE");
         }
 
@@ -196,13 +196,13 @@ void SearchPrinter::printRootMoves(SearchThread      &th,
         oldState.copyfmt(std::cout);
         std::cout << std::fixed << std::setprecision(2);
 
-        if (Config::MessageMode == MsgMode::NORMAL) {
+        if (Config::GeneralCfg.messageMode == MsgMode::NORMAL) {
             MESSAGEL("(" << pvIdx + 1 << ") " << curMove.value << " (W " << (curMove.winRate * 100)
                          << ", D " << (curMove.drawRate * 100) << ", S " << curMove.utilityStdev
                          << ") | V " << nodesText(curMove.numNodes) << " | SD " << curMove.selDepth
                          << " | " << MovesText {curMove.pv});
         }
-        else if (Config::MessageMode == MsgMode::UCILIKE) {
+        else if (Config::GeneralCfg.messageMode == MsgMode::UCILIKE) {
             MESSAGEL("multipv " << pvIdx + 1 << " ev " << curMove.value << " w "
                                 << (curMove.winRate * 100) << " d " << (curMove.drawRate * 100)
                                 << " stdev " << curMove.utilityStdev << " v "
@@ -215,7 +215,7 @@ void SearchPrinter::printRootMoves(SearchThread      &th,
         std::cout.copyfmt(oldState);
     }
 
-    if (Config::MessageMode == MsgMode::NORMAL) {
+    if (Config::GeneralCfg.messageMode == MsgMode::NORMAL) {
         MESSAGEL("Speed " << speedText(speed) << " | Visit " << nodesText(nodes) << " | Time "
                           << timeText(tc.elapsed()));
     }
@@ -226,7 +226,7 @@ void SearchPrinter::printSearchEnds(SearchThread      &th,
                                     int                rootDepth,
                                     SearchThread      &bestThread)
 {
-    if (Config::MessageMode == MsgMode::NORMAL || Config::MessageMode == MsgMode::BRIEF) {
+    if (Config::GeneralCfg.messageMode == MsgMode::NORMAL || Config::GeneralCfg.messageMode == MsgMode::BRIEF) {
         uint64_t nodes      = th.engine.nodesSearched();
         uint64_t speed      = nodes * 1000 / std::max(tc.elapsed(), (Time)1);
         bool     showPonder = th.engine.ctx.inPonder.load(std::memory_order_relaxed);
@@ -237,7 +237,7 @@ void SearchPrinter::printSearchEnds(SearchThread      &th,
                  << " | Node " << nodesText(nodes) << " | Time " << timeText(tc.elapsed()));
 
         // Outputs full PV if not shown before
-        if (Config::MessageMode == MsgMode::BRIEF || &bestThread != &th) {
+        if (Config::GeneralCfg.messageMode == MsgMode::BRIEF || &bestThread != &th) {
             // Select a longer PV for final output
             if (bestThread.rootMoves[0].pv.size() <= 2
                 && bestThread.rootMoves[0].previousPv.size() > 2)
@@ -265,12 +265,12 @@ void SearchPrinter::printBestmoveWithoutSearch(SearchThread     &th,
         INFO("SPEED", 0);
         INFO("EVAL", moveValue);
         INFO("WINRATE", Evaluation::valueToWinRate(moveValue));
-        INFO("BESTLINE", MovesText {*pv, true, true, th.board->size(), Config::IOCoordMode});
+        INFO("BESTLINE", MovesText {*pv, true, true, th.board->size(), Config::GeneralCfg.ioCoordMode});
         INFO("PV", "DONE");
     }
 
     // A message for compatibility with UCI
-    if (Config::MessageMode == MsgMode::UCILIKE) {
+    if (Config::GeneralCfg.messageMode == MsgMode::UCILIKE) {
         if (pv)
             MESSAGEL("depth " << rootDepth << "-" << 0 << " ev " << moveValue
                               << " n 0 n/ms 0 tm 0 pv " << MovesText {*pv});

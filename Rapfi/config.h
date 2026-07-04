@@ -52,14 +52,35 @@ extern const std::string InternalConfig;
 
 // -------------------------------------------------
 // General options
-extern bool                ReloadConfigEachMove;
-extern bool                ClearHashAfterConfigLoaded;
-extern size_t              DefaultThreadNum;
-extern MsgMode             MessageMode;
-extern CoordConvertionMode IOCoordMode;
-extern CandidateRange      DefaultCandidateRange;
-extern size_t              MemoryReservedMB[RULE_NB];
-extern size_t              DefaultTTSizeKB;
+
+/// GeneralConfig groups the engine-wide knobs read from the "[general]" TOML
+/// table. One mutable global instance (GeneralCfg) holds the live
+/// configuration; readGeneral fills it (see the audit table in the phase plan
+/// - the three string-enum keys hard-reset on unknown values), and runtime
+/// mutation (gomocup toggles, benchmark save/restore) is plain field
+/// assignment or whole-struct copy.
+struct GeneralConfig
+{
+    /// Should we reload config file before searching each move.
+    bool reloadConfigEachMove = false;
+    /// Should we clear hash after each time config file is loaded.
+    bool clearHashAfterConfigLoaded = true;
+    /// Default number of threads if not specified (0 means max hardware concurrency).
+    size_t defaultThreadNum = 1;
+    /// Message output mode.
+    MsgMode messageMode = MsgMode::BRIEF;
+    /// Coordinate conversion mode for protocol I/O.
+    CoordConvertionMode ioCoordMode = CoordConvertionMode::NONE;
+    /// Default candidate range mode if not specified when creating board.
+    CandidateRange defaultCandidateRange = CandidateRange::SQUARE3_LINE4;
+    /// Memory reserved for stuff other than hash table in max_memory option.
+    size_t memoryReservedMB[RULE_NB] = {0};
+    /// Default hash table size (zero for not setting).
+    size_t defaultTTSizeKB = 0;
+};
+
+/// The global live general configuration.
+extern GeneralConfig GeneralCfg;
 
 // -------------------------------------------------
 // Config loading & exporting

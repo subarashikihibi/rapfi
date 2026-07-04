@@ -83,22 +83,7 @@ namespace Config {
 // -------------------------------------------------
 // General options
 
-/// Should we reload config file before searching each move.
-bool ReloadConfigEachMove = false;
-/// Should we clear hash after each time config file is loaded.
-bool ClearHashAfterConfigLoaded = true;
-/// Default number of therads if not specified (0 means max hardware concurrency).
-size_t DefaultThreadNum = 1;
-/// Message output mode.
-MsgMode MessageMode = MsgMode::BRIEF;
-/// Coordinate convertion mode for protocol I/O.
-CoordConvertionMode IOCoordMode = CoordConvertionMode::NONE;
-/// Default candidate range mode if not specified when creating board.
-CandidateRange DefaultCandidateRange = CandidateRange::SQUARE3_LINE4;
-/// Memory reserved for stuff other than hash table in max_memory option.
-size_t MemoryReservedMB[RULE_NB] = {0};
-/// Default hash table size (zero for not setting).
-size_t DefaultTTSizeKB = 0;
+GeneralConfig GeneralCfg;
 
 // -------------------------------------------------
 // Search options
@@ -187,18 +172,20 @@ void Config::readRequirement(const cpptoml::table &t)
 /// Read general table of the config.
 void Config::readGeneral(const cpptoml::table &t)
 {
-    ReloadConfigEachMove = t.get_as<bool>("reload_config_each_move").value_or(ReloadConfigEachMove);
-    ClearHashAfterConfigLoaded =
-        t.get_as<bool>("clear_hash_after_config_loaded").value_or(ClearHashAfterConfigLoaded);
+    GeneralCfg.reloadConfigEachMove =
+        t.get_as<bool>("reload_config_each_move").value_or(GeneralCfg.reloadConfigEachMove);
+    GeneralCfg.clearHashAfterConfigLoaded = t.get_as<bool>("clear_hash_after_config_loaded")
+                                                .value_or(GeneralCfg.clearHashAfterConfigLoaded);
 
     // Read Default Thread Num
-    DefaultThreadNum = t.get_as<uint64_t>("default_thread_num").value_or(DefaultThreadNum);
-    if (DefaultThreadNum == 0) {
+    GeneralCfg.defaultThreadNum =
+        t.get_as<uint64_t>("default_thread_num").value_or(GeneralCfg.defaultThreadNum);
+    if (GeneralCfg.defaultThreadNum == 0) {
 #ifdef MULTI_THREADING
-        DefaultThreadNum = std::thread::hardware_concurrency();
-        MESSAGEL("Setting default thread num to " << DefaultThreadNum << ".");
+        GeneralCfg.defaultThreadNum = std::thread::hardware_concurrency();
+        MESSAGEL("Setting default thread num to " << GeneralCfg.defaultThreadNum << ".");
 #else
-        DefaultThreadNum = 1;
+        GeneralCfg.defaultThreadNum = 1;
 #endif
     }
 
@@ -206,15 +193,15 @@ void Config::readGeneral(const cpptoml::table &t)
     if (t.get_as<std::string>("message_mode")) {
         std::string msgModeStr = *t.get_as<std::string>("message_mode");
         if (msgModeStr == "normal")
-            MessageMode = MsgMode::NORMAL;
+            GeneralCfg.messageMode = MsgMode::NORMAL;
         else if (msgModeStr == "brief")
-            MessageMode = MsgMode::BRIEF;
+            GeneralCfg.messageMode = MsgMode::BRIEF;
         else if (msgModeStr == "ucilike")
-            MessageMode = MsgMode::UCILIKE;
+            GeneralCfg.messageMode = MsgMode::UCILIKE;
         else {
             if (msgModeStr != "none")
                 MESSAGEL("Warning: unknown message mode [" << msgModeStr << "], reset to [none].");
-            MessageMode = MsgMode::NONE;
+            GeneralCfg.messageMode = MsgMode::NONE;
         }
     }
 
@@ -222,14 +209,14 @@ void Config::readGeneral(const cpptoml::table &t)
     if (t.get_as<std::string>("coord_conversion_mode")) {
         std::string coordModeStr = *t.get_as<std::string>("coord_conversion_mode");
         if (coordModeStr == "X_flipY")
-            IOCoordMode = CoordConvertionMode::X_FLIPY;
+            GeneralCfg.ioCoordMode = CoordConvertionMode::X_FLIPY;
         else if (coordModeStr == "flipY_X")
-            IOCoordMode = CoordConvertionMode::FLIPY_X;
+            GeneralCfg.ioCoordMode = CoordConvertionMode::FLIPY_X;
         else {
             if (coordModeStr != "none")
                 MESSAGEL("Warning: unknown coordinate conversion mode [" << coordModeStr
                                                                          << "], reset to [none].");
-            IOCoordMode = CoordConvertionMode::NONE;
+            GeneralCfg.ioCoordMode = CoordConvertionMode::NONE;
         }
     }
 
@@ -237,21 +224,21 @@ void Config::readGeneral(const cpptoml::table &t)
     if (t.get_as<std::string>("default_candidate_range")) {
         std::string candRangeModeStr = *t.get_as<std::string>("default_candidate_range");
         if (candRangeModeStr == "square2")
-            DefaultCandidateRange = CandidateRange::SQUARE2;
+            GeneralCfg.defaultCandidateRange = CandidateRange::SQUARE2;
         else if (candRangeModeStr == "square2_line3")
-            DefaultCandidateRange = CandidateRange::SQUARE2_LINE3;
+            GeneralCfg.defaultCandidateRange = CandidateRange::SQUARE2_LINE3;
         else if (candRangeModeStr == "square3")
-            DefaultCandidateRange = CandidateRange::SQUARE3;
+            GeneralCfg.defaultCandidateRange = CandidateRange::SQUARE3;
         else if (candRangeModeStr == "square3_line4")
-            DefaultCandidateRange = CandidateRange::SQUARE3_LINE4;
+            GeneralCfg.defaultCandidateRange = CandidateRange::SQUARE3_LINE4;
         else if (candRangeModeStr == "square4")
-            DefaultCandidateRange = CandidateRange::SQUARE4;
+            GeneralCfg.defaultCandidateRange = CandidateRange::SQUARE4;
         else if (candRangeModeStr == "full_board")
-            DefaultCandidateRange = CandidateRange::FULL_BOARD;
+            GeneralCfg.defaultCandidateRange = CandidateRange::FULL_BOARD;
         else {
             MESSAGEL("Warning: unknown candidate range [" << candRangeModeStr
                                                           << "], reset to [square2_line3].");
-            DefaultCandidateRange = CandidateRange::SQUARE2_LINE3;
+            GeneralCfg.defaultCandidateRange = CandidateRange::SQUARE2_LINE3;
         }
     }
 
@@ -259,19 +246,20 @@ void Config::readGeneral(const cpptoml::table &t)
     if (auto table = t.get_array("memory_reserved_mb")) {
         if (auto array = table->get_array_of<int64_t>()) {
             for (int i = 0; i < RULE_NB; i++)
-                MemoryReservedMB[i] = array->at(std::min<size_t>(i, array->size() - 1));
+                GeneralCfg.memoryReservedMB[i] = array->at(std::min<size_t>(i, array->size() - 1));
         }
     }
     else {
         auto v = t.get_as<uint64_t>("memory_reserved_mb");
         for (int i = 0; i < RULE_NB; i++)
-            MemoryReservedMB[i] = v.value_or(MemoryReservedMB[i]);
+            GeneralCfg.memoryReservedMB[i] = v.value_or(GeneralCfg.memoryReservedMB[i]);
     }
 
-    DefaultTTSizeKB = t.get_as<uint64_t>("default_tt_size_kb").value_or(DefaultTTSizeKB);
+    GeneralCfg.defaultTTSizeKB =
+        t.get_as<uint64_t>("default_tt_size_kb").value_or(GeneralCfg.defaultTTSizeKB);
     // Resize TT according to default TT size (overriding previous size)
-    if (DefaultTTSizeKB > 0)
-        Search::Engine.searcher()->setMemoryLimit(DefaultTTSizeKB);
+    if (GeneralCfg.defaultTTSizeKB > 0)
+        Search::Engine.searcher()->setMemoryLimit(GeneralCfg.defaultTTSizeKB);
 }
 
 /// Read search table of the config.
@@ -505,7 +493,7 @@ void Config::readEvaluator(const cpptoml::table &t)
                     catch (const Evaluation::UnsupportedBoardSizeError &e) {
                     }
                     catch (const std::exception &e) {
-                        if (MessageMode != MsgMode::NONE)
+                        if (GeneralCfg.messageMode != MsgMode::NONE)
                             MESSAGEL("Failed to load from "
                                      << (!weightPath.empty()
                                              ? pathToConsoleString(weightPath)
@@ -515,7 +503,7 @@ void Config::readEvaluator(const cpptoml::table &t)
                     }
                 }
 
-                if (MessageMode != MsgMode::NONE)
+                if (GeneralCfg.messageMode != MsgMode::NONE)
                     MESSAGEL("Evaluator " << evaluatorName
                                           << " disabled: no compatible weight config found.");
                 return nullptr;

@@ -99,7 +99,7 @@ void Command::opengen(int argc, char *argv[])
 
     // Set message mode to none if silence search is enabled
     if (silence)
-        Config::MessageMode = MsgMode::NONE;
+        Config::GeneralCfg.messageMode = MsgMode::NONE;
 
     // Set number of iterations after special search condition
     Search::SearchCfg.numIterationAfterMate         = 0;

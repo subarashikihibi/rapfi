@@ -905,7 +905,7 @@ Evaluator::Evaluator(int                   boardSize,
         if (!contains(header.supportedBoardSizes, args.boardSize))
             throw UnsupportedBoardSizeError(args.boardSize);
 
-        if (Config::MessageMode != MsgMode::NONE) {
+        if (Config::GeneralCfg.messageMode != MsgMode::NONE) {
             MESSAGEL("mix10 nnue: load weight from " << pathToConsoleString(args.weightPath));
             printLoadInfo = true;
         }

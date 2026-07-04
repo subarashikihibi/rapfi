@@ -308,9 +308,9 @@ void Command::selfplay(int argc, char *argv[])
 
     // Set message mode to none if silence search is enabled
     if (silence)
-        Config::MessageMode = MsgMode::NONE;
+        Config::GeneralCfg.messageMode = MsgMode::NONE;
     else
-        Config::MessageMode = MsgMode::BRIEF;
+        Config::GeneralCfg.messageMode = MsgMode::BRIEF;
     Search::SearchCfg.aspirationWindow = true;
 
     // Set num threads and TT size

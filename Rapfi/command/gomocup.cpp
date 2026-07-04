@@ -82,7 +82,7 @@ std::optional<Pos> parseLegalCoord(std::istream &is, Board &board)
     char comma;
     is >> x >> comma >> y;
 
-    Pos pos = inputCoordConvert(x, y, board.size(), Config::IOCoordMode);
+    Pos pos = inputCoordConvert(x, y, board.size(), Config::GeneralCfg.ioCoordMode);
     if (board.isLegal(pos)) {
         if (checkLastMoveIsNotPass(board))
             return std::nullopt;
@@ -108,15 +108,15 @@ void sendActionAndUpdateBoard(ActionType action, Pos bestMove)
 {
     if (action == ActionType::Move) {
         board->move(options.rule, bestMove);
-        std::cout << CoordText {bestMove, board->size(), Config::IOCoordMode} << std::endl;
+        std::cout << CoordText {bestMove, board->size(), Config::GeneralCfg.ioCoordMode} << std::endl;
     }
     else if (action == ActionType::Move2) {
         Pos move1 = Search::Engine.main()->rootMoves[0].pv[0];
         Pos move2 = Search::Engine.main()->rootMoves[0].pv[1];
         board->move(options.rule, move1);
         board->move(options.rule, move2);
-        std::cout << CoordText {move1, board->size(), Config::IOCoordMode} << ' '
-                  << CoordText {move2, board->size(), Config::IOCoordMode} << std::endl;
+        std::cout << CoordText {move1, board->size(), Config::GeneralCfg.ioCoordMode} << ' '
+                  << CoordText {move2, board->size(), Config::GeneralCfg.ioCoordMode} << std::endl;
     }
     else if (action == ActionType::Swap) {
         std::cout << "SWAP" << std::endl;
@@ -130,8 +130,8 @@ void sendActionAndUpdateBoard(ActionType action, Pos bestMove)
         Search::Engine.startThinking(*board, options, false, []() {
             Pos move1 = Search::Engine.main()->rootMoves[0].pv[0];
             Pos move2 = Search::Engine.main()->rootMoves[0].pv[1];
-            std::cout << CoordText {move1, board->size(), Config::IOCoordMode} << ' '
-                      << CoordText {move2, board->size(), Config::IOCoordMode} << std::endl;
+            std::cout << CoordText {move1, board->size(), Config::GeneralCfg.ioCoordMode} << ' '
+                      << CoordText {move2, board->size(), Config::GeneralCfg.ioCoordMode} << std::endl;
         });
     }
 }
@@ -147,7 +147,7 @@ void think(Board                             &board,
     options.swapable            = swapable;
     options.disableOpeningQuery = disableOpeningQuery;
 
-    if (Config::ReloadConfigEachMove)
+    if (Config::GeneralCfg.reloadConfigEachMove)
         loadConfig();
 
     // If threads are pondering, stop them now and wait for them to finish
@@ -185,8 +185,8 @@ void setGUIMode()
     MESSAGEL("INFO MAX_THREAD_NUM 256");
     MESSAGEL("INFO MAX_HASH_SIZE 30");
     GUIMode = true;
-    if (Config::MessageMode == MsgMode::BRIEF)
-        Config::MessageMode = MsgMode::NORMAL;
+    if (Config::GeneralCfg.messageMode == MsgMode::BRIEF)
+        Config::GeneralCfg.messageMode = MsgMode::NORMAL;
 }
 
 void getOption()
@@ -226,7 +226,7 @@ void getOption()
         size_t memReservedKB = 0;
 
         if (token == "MAX_MEMORY") {
-            memReservedKB = Config::MemoryReservedMB[options.rule.rule] * 1024;
+            memReservedKB = Config::GeneralCfg.memoryReservedMB[options.rule.rule] * 1024;
             if (val == 0) {
                 maxMemSizeKB = 350 * 1024;  // use default gomocup max_memory
             }
@@ -259,10 +259,10 @@ void getOption()
         }
 
         // Resize TT if memory reserved is different for this rule.
-        if (Config::MemoryReservedMB[prevRule] != Config::MemoryReservedMB[options.rule.rule]) {
+        if (Config::GeneralCfg.memoryReservedMB[prevRule] != Config::GeneralCfg.memoryReservedMB[options.rule.rule]) {
             size_t maxMemSizeKB = Search::Engine.searcher()->getMemoryLimit()
-                                  + Config::MemoryReservedMB[prevRule] * 1024;
-            size_t memReservedKB = Config::MemoryReservedMB[options.rule.rule] * 1024;
+                                  + Config::GeneralCfg.memoryReservedMB[prevRule] * 1024;
+            size_t memReservedKB = Config::GeneralCfg.memoryReservedMB[options.rule.rule] * 1024;
             size_t memLimitKB    = maxMemSizeKB <= memReservedKB ? 1 : maxMemSizeKB - memReservedKB;
             Search::Engine.searcher()->setMemoryLimit(memLimitKB);
         }
@@ -585,7 +585,7 @@ void start()
     }
 
     if (!board || boardSize != board->size()) {
-        auto candidateRange = candRange.value_or(Config::DefaultCandidateRange);
+        auto candidateRange = candRange.value_or(Config::GeneralCfg.defaultCandidateRange);
         board               = std::make_unique<Board>(boardSize, candidateRange);
     }
 
@@ -723,7 +723,7 @@ void getBlock(bool remove = false)
         ss << coordStr;
         ss >> x >> comma >> y;
 
-        Pos pos = inputCoordConvert(x, y, board->size(), Config::IOCoordMode);
+        Pos pos = inputCoordConvert(x, y, board->size(), Config::GeneralCfg.ioCoordMode);
         if (!board->isInBoard(pos) || pos == Pos::PASS)
             ERRORL("Block coord is a pass or invalid.");
 
@@ -753,7 +753,7 @@ void showForbid()
         FOR_EVERY_EMPTY_POS(board, pos)
         {
             if (board->checkForbiddenPoint(pos)) {
-                auto [cx, cy] = outputCoordConvert(pos, board->size(), Config::IOCoordMode);
+                auto [cx, cy] = outputCoordConvert(pos, board->size(), Config::GeneralCfg.ioCoordMode);
                 std::cout << std::setfill('0') << std::setw(2) << cx << std::setfill('0')
                           << std::setw(2) << cy;
             }
@@ -846,7 +846,7 @@ void queryDatabaseAll(bool getPosition)
 
             // Print this position if it has DBRecord or board text
             if (printThisPos) {
-                auto [cx, cy] = outputCoordConvert(pos, board->size(), Config::IOCoordMode);
+                auto [cx, cy] = outputCoordConvert(pos, board->size(), Config::GeneralCfg.ioCoordMode);
                 MESSAGEL("DATABASE " << cx << ' ' << cy << ' ' << displayLabelValue << ' '
                                      << record.value << ' ' << record.depth() << ' '
                                      << int(record.bound()) << ' ' << int(!record.comment().empty())
@@ -1174,9 +1174,9 @@ void swap2board()
             opening[2] = Pos(2, 4);
         }
 
-        std::cout << CoordText {opening[0], board->size(), Config::IOCoordMode} << ' '
-                  << CoordText {opening[1], board->size(), Config::IOCoordMode} << ' '
-                  << CoordText {opening[2], board->size(), Config::IOCoordMode} << std::endl;
+        std::cout << CoordText {opening[0], board->size(), Config::GeneralCfg.ioCoordMode} << ' '
+                  << CoordText {opening[1], board->size(), Config::GeneralCfg.ioCoordMode} << ' '
+                  << CoordText {opening[2], board->size(), Config::GeneralCfg.ioCoordMode} << std::endl;
     }
     else {
         think(*board, 1, Search::SearchOptions::BALANCE_NONE, true);

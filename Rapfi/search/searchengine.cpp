@@ -413,7 +413,7 @@ void SearchEngine::runSearch(SearchThread &main)
 void SearchEngine::clear(bool clearAllMemory)
 {
     if (threads_.empty())
-        setNumThreads(Config::DefaultThreadNum);
+        setNumThreads(Config::GeneralCfg.defaultThreadNum);
 
     if (searcher())
         searcher()->clear(*this, clearAllMemory);
