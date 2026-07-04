@@ -31,6 +31,90 @@
 
 namespace Search {
 
+namespace {
+
+/// Generate the root move list for the main thread from the current board
+/// position and options: applies block-move filtering, balance2 move pair
+/// expansion, and root symmetry filtering.
+void generateRootMoves(MainSearchThread &th)
+{
+    auto addMoveToRootMoves = [&th](Pos m) {
+        // Ignore blocked moves
+        if (std::count(th.searchOptions.blockMoves.begin(),
+                       th.searchOptions.blockMoves.end(),
+                       m))
+            return;
+
+        if (th.searchOptions.balanceMode == Search::SearchOptions::BALANCE_TWO) {
+            // Use candidates before first move
+            std::unordered_set<Pos> cands;
+            FOR_EVERY_CAND_POS(th.board, pos)
+            {
+                cands.insert(pos);
+            }
+            th.board->move(th.searchOptions.rule, m);
+            // Generate second move for balance2
+            MovePicker movePicker2(th.searchOptions.rule,
+                                   *th.board,
+                                   MovePicker::ExtraArgs<MovePicker::ROOT> {});
+            while (Pos m2 = movePicker2()) {
+                if (cands.find(m2) != cands.end()) {
+                    Search::Balance2Move bm {m, m2};
+                    th.rootMoves.emplace_back(bm);
+                    th.balance2Moves[bm] = th.rootMoves.size() - 1;
+                }
+            }
+            th.board->undo(th.searchOptions.rule);
+        }
+        else {
+            th.rootMoves.emplace_back(m);
+        }
+    };
+
+    // Generate root moves for main search thread
+    MovePicker movePicker(th.searchOptions.rule,
+                          *th.board,
+                          MovePicker::ExtraArgs<MovePicker::ROOT> {});
+    while (Pos m = movePicker()) {
+        addMoveToRootMoves(m);
+    }
+
+    // If all legal moves are blocked, we select all candidate moves as root moves
+    if (th.rootMoves.empty() && th.searchOptions.blockMoves.size() > 0) {
+        std::unordered_set<Pos> cands;
+        FOR_EVERY_CAND_POS(th.board, pos)
+        {
+            cands.insert(pos);
+        }
+
+        for (const auto &m : cands) {
+            addMoveToRootMoves(m);
+        }
+    }
+
+    // Filter root moves with symmetry (not for balance two)
+    if (th.searchOptions.balanceMode != Search::SearchOptions::BALANCE_TWO) {
+        std::vector<Pos> rootMoveList;
+        for (const auto &rm : th.rootMoves) {
+            rootMoveList.push_back(rm.pv[0]);
+        }
+
+        Opening::filterSymmetryMoves(*th.board, rootMoveList);
+
+        if (rootMoveList.size() < th.rootMoves.size()) {
+            // Remove root moves that are not in the filtered list
+            auto pred = [&rootMoveList](const Search::RootMove &rm) -> bool {
+                return std::find(rootMoveList.begin(), rootMoveList.end(), rm.pv[0])
+                       == rootMoveList.end();
+            };
+            th.rootMoves.erase(std::remove_if(th.rootMoves.begin(), th.rootMoves.end(), pred),
+                               th.rootMoves.end());
+        }
+    }
+}
+
+}  // namespace
+
 /// Global search thread pool
 ThreadPool Threads;
 
@@ -341,78 +425,8 @@ void ThreadPool::startThinking(const Board          &board,
     // Expand board candidate if needed
     Opening::expandCandidate(*main()->board);
 
-    auto addMoveToRootMoves = [this](Pos m) {
-        // Ignore blocked moves
-        if (std::count(main()->searchOptions.blockMoves.begin(),
-                       main()->searchOptions.blockMoves.end(),
-                       m))
-            return;
-
-        if (main()->searchOptions.balanceMode == Search::SearchOptions::BALANCE_TWO) {
-            // Use candidates before first move
-            std::unordered_set<Pos> cands;
-            FOR_EVERY_CAND_POS(main()->board, pos)
-            {
-                cands.insert(pos);
-            }
-            main()->board->move(main()->searchOptions.rule, m);
-            // Generate second move for balance2
-            MovePicker movePicker2(main()->searchOptions.rule,
-                                   *main()->board,
-                                   MovePicker::ExtraArgs<MovePicker::ROOT> {});
-            while (Pos m2 = movePicker2()) {
-                if (cands.find(m2) != cands.end()) {
-                    Search::Balance2Move bm {m, m2};
-                    main()->rootMoves.emplace_back(bm);
-                    main()->balance2Moves[bm] = main()->rootMoves.size() - 1;
-                }
-            }
-            main()->board->undo(main()->searchOptions.rule);
-        }
-        else {
-            main()->rootMoves.emplace_back(m);
-        }
-    };
-
-    // Generate root moves for main search thread
-    MovePicker movePicker(options.rule, *main()->board, MovePicker::ExtraArgs<MovePicker::ROOT> {});
-    while (Pos m = movePicker()) {
-        addMoveToRootMoves(m);
-    }
-
-    // If all legal moves are blocked, we select all candidate moves as root moves
-    if (main()->rootMoves.empty() && options.blockMoves.size() > 0) {
-        std::unordered_set<Pos> cands;
-        FOR_EVERY_CAND_POS(main()->board, pos)
-        {
-            cands.insert(pos);
-        }
-
-        for (const auto &m : cands) {
-            addMoveToRootMoves(m);
-        }
-    }
-
-    // Filter root moves with symmetry (not for balance two)
-    if (options.balanceMode != Search::SearchOptions::BALANCE_TWO) {
-        std::vector<Pos> rootMoveList;
-        for (const auto &rm : main()->rootMoves) {
-            rootMoveList.push_back(rm.pv[0]);
-        }
-
-        Opening::filterSymmetryMoves(*main()->board, rootMoveList);
-
-        if (rootMoveList.size() < main()->rootMoves.size()) {
-            // Remove root moves that are not in the filtered list
-            auto pred = [&rootMoveList](const Search::RootMove &rm) -> bool {
-                return std::find(rootMoveList.begin(), rootMoveList.end(), rm.pv[0])
-                       == rootMoveList.end();
-            };
-            main()->rootMoves.erase(
-                std::remove_if(main()->rootMoves.begin(), main()->rootMoves.end(), pred),
-                main()->rootMoves.end());
-        }
-    }
+    // Generate root moves for the main search thread
+    generateRootMoves(*main());
 
     // Launch a small task to clear threads state and copy state from main thread
     main()->runCustomTaskAndWait(
