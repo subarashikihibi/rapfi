@@ -19,6 +19,9 @@
 #include "searchengine.h"
 
 #include "../config.h"
+#include "../database/dbclient.h"
+#include "../database/dbstorage.h"
+#include "../eval/evaluator.h"
 #include "../game/board.h"
 #include "movepick.h"
 #include "opening.h"

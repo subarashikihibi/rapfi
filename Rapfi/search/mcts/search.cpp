@@ -19,6 +19,7 @@
 #include "../../config.h"
 #include "../../core/iohelper.h"
 #include "../../eval/eval.h"
+#include "../../eval/evaluator.h"
 #include "../../game/wincheck.h"
 #include "../hashtable.h"
 #include "../opening.h"
@@ -1008,7 +1009,10 @@ const RootMove *MCTSSearcher::searchMain(SearchThread &th)
     scratch.lastOutputNodes        = 0;
     scratch.lastOutputTime         = now();
 
-    // Starts worker threads, then starts main thread
+    // Starts worker threads, then starts main thread.
+    // Root setup happens-before the workers read graph.root: runOnAllThreads
+    // dispatches the tasks only after setupRootNode returns (on this thread),
+    // and the task hand-off synchronizes through the thread mutex/condvar.
     ctx.printer.printSearchStarts(th, ctx.timectl);
     setupRootNode(th);  // Setup root node and other stuffs
     th.engine.runOnAllThreads([this](SearchThread &t) { search(t); }, true);

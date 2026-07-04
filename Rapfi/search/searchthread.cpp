@@ -20,6 +20,8 @@
 
 #include "../config.h"
 #include "../core/platform.h"
+#include "../database/dbclient.h"
+#include "../eval/evaluator.h"
 #include "../game/board.h"
 #include "searcher.h"
 

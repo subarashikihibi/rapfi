@@ -20,7 +20,9 @@
 #include "../../core/hash.h"
 #include "../../core/iohelper.h"
 #include "../../core/platform.h"
+#include "../../database/dbclient.h"
 #include "../../eval/eval.h"
+#include "../../eval/evaluator.h"
 #include "../../game/board.h"
 #include "../../game/movegen.h"
 #include "../../game/wincheck.h"
@@ -1303,9 +1305,6 @@ moves_loop:
             Value singularBeta =
                 std::max(ttValue - singularMargin<Rule>(depth, formerPv), -VALUE_MATE);
 
-            // Backup current P4
-            // Pattern4 moveP4Backup[SIDE_NB] = {ss->moveP4[BLACK], ss->moveP4[WHITE]};
-
             // Exclude ttMove from the reduced depth search to see the value of second best move
             ss->skipMove = move;
             value        = search<Rule, NonPV>(board,
@@ -1315,10 +1314,6 @@ moves_loop:
                                         depth - singularReduction(depth, formerPv),
                                         cutNode);
             ss->skipMove = Pos::NONE;
-
-            // Restore current P4
-            // ss->moveP4[BLACK] = moveP4Backup[BLACK];
-            // ss->moveP4[WHITE] = moveP4Backup[WHITE];
 
             // Extend if only the ttMove fails high, while other moves fails low.
             if (value < singularBeta) {

@@ -21,6 +21,7 @@
 #include "command/command.h"
 #include "core/compressor.h"
 #include "core/iohelper.h"
+#include "database/dbclient.h"
 #include "database/dbstorage.h"
 #include "database/yxdbstorage.h"
 #include "eval/evaluator.h"

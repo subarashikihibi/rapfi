@@ -21,7 +21,6 @@
 #include "../config.h"
 #include "../core/iohelper.h"
 #include "../game/board.h"
-#include "search.h"
 #include "searchthread.h"
 
 #include <cassert>

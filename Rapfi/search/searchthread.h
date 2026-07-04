@@ -19,9 +19,6 @@
 #pragma once
 
 #include "../core/platform.h"
-#include "../database/dbclient.h"
-#include "../database/dbstorage.h"
-#include "../eval/evaluator.h"
 #include "searchcommon.h"
 #include "searchengine.h"
 #include "searcher.h"
@@ -38,6 +35,10 @@
 #endif
 
 class Board;  // forward declaration
+
+namespace Database {
+class DBClient;  // forward declaration
+}
 
 namespace Search {
 
