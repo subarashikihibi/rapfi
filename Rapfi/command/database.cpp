@@ -16,10 +16,10 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../config.h"
 #include "../core/iohelper.h"
 #include "../core/utils.h"
 #include "../database/dbclient.h"
+#include "../database/dbconfig.h"
 #include "../database/dbstorage.h"
 #include "../database/dbutils.h"
 #include "../database/yxdbstorage.h"
@@ -455,7 +455,7 @@ void Command::database(int argc, char *argv[])
             std::getline(is, cmdline);
             if (auto dbToMerge = createDBStorageFromCmdline(cmdline)) {
                 size_t writeCount =
-                    mergeDatabase(*dbStorage, *dbToMerge, Config::DatabaseOverwriteRule);
+                    mergeDatabase(*dbStorage, *dbToMerge, Database::DatabaseCfg.search.overwriteRule);
                 MESSAGEL("Merged " << writeCount << " out of " << dbToMerge->size()
                                    << " records into the database.");
             }

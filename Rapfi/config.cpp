@@ -22,6 +22,7 @@
 #include "core/compressor.h"
 #include "core/iohelper.h"
 #include "database/dbclient.h"
+#include "database/dbconfig.h"
 #include "database/dbstorage.h"
 #include "database/yxdbstorage.h"
 #include "eval/evaluator.h"
@@ -115,78 +116,9 @@ const char *DefaultSearcherName = "alphabeta";
 // -------------------------------------------------
 // Database options
 
-/// Whether to enable database by default
-bool DatabaseDefaultEnabled;
-/// Legacy code page to use for early database files and imported library files.
-uint16_t DatabaseLegacyFileCodePage;
-/// The type of database storage
-std::string DatabaseType;
-/// The URL of database storage (in utf-8 encoding)
-std::string DatabaseURL;
 /// Database storage factory, which takes the url (in utf-8 encoding)
 /// and returns a unique pointer to an instance of DBStorage.
 std::function<std::unique_ptr<::Database::DBStorage>(std::string)> DatabaseMaker;
-/// Database client cache sizes
-size_t DatabaseCacheSize       = 4096;
-size_t DatabaseRecordCacheSize = 32768;
-
-// Library import options
-
-/// Mapping of marks in library file
-char DatabaseLibBlackWinMark  = 'a';
-char DatabaseLibWhiteWinMark  = 'a';
-char DatabaseLibBlackLoseMark = 'c';
-char DatabaseLibWhiteLoseMark = 'c';
-/// Ignore all comments in imported library file
-bool DatabaseLibIgnoreComment = false;
-/// Ignore all board texts in imported library file
-bool DatabaseLibIgnoreBoardText = false;
-
-// Database search options
-
-/// Whether to write/update the database in search
-bool DatabaseReadonlyMode = false;
-/// Whether to always write parent node if any of the children are written
-bool DatabaseMandatoryParentWrite = true;
-
-/// Search before this ply is required to query the database
-int DatabaseQueryPly = 3;
-/// How many iteration needed to increase one database query ply
-int DatabaseQueryPVIterPerPlyIncrement = 1;
-/// How many iteration needed to increase one database query ply
-int DatabaseQueryNonPVIterPerPlyIncrement = 2;
-
-/// PV node before this ply is required to write the database
-int DatabasePVWritePly = 1;
-/// How many depth needed to add a new record in PV node
-int DatabasePVWriteMinDepth = 25;
-/// NonPV node before this ply is required to write the database
-int DatabaseNonPVWritePly = 0;
-/// How many depth needed to add a new record in NonPV node
-int DatabaseNonPVWriteMinDepth = 25;
-/// The range of value allowed to write in PV/NonPV node
-int DatabaseWriteValueRange = 800;
-/// Mate node before this ply is required to write the database
-int DatabaseMateWritePly = 2;
-/// How many depth needed to add a new record in exact Mate node
-int DatabaseMateWriteMinDepthExact = 20;
-/// How many depth needed to add a new record in non-exact Mate node
-int DatabaseMateWriteMinDepthNonExact = 40;
-/// For mate longer than this step, we will try to write the record
-int DatabaseMateWriteMinStep = 10;
-
-/// For record found less then this ply, it will try to overwrite it with exact record
-int DatabaseExactOverwritePly = 100;
-/// For record found less then this ply, it will try to overwrite it with non-exact record
-int DatabaseNonExactOverwritePly = 0;
-/// The overwrite rule to write the database
-::Database::OverwriteRule DatabaseOverwriteRule = ::Database::OverwriteRule::BetterValueDepthBound;
-/// The bias added to the exact bound when comparing
-int DatabaseOverwriteExactBias = 3;
-/// The bias added to the old depth bound when comparing
-int DatabaseOverwriteDepthBoundBias = -1;
-/// The bias added to the queried depth bound when comparing
-int DatabaseQueryResultDepthBoundBias = 0;
 
 // -------------------------------------------------
 
@@ -678,32 +610,40 @@ void Config::readEvaluator(const cpptoml::table &t)
 /// Read database table in the config.
 void Config::readDatabase(const cpptoml::table &t)
 {
-    DatabaseDefaultEnabled = t.get_as<bool>("enable_by_default").value_or(DatabaseDefaultEnabled);
-    DatabaseType           = t.get_as<std::string>("type").value_or(DatabaseType);
-    DatabaseURL            = t.get_as<std::string>("url").value_or(DatabaseURL);
-    DatabaseCacheSize      = t.get_as<size_t>("cache_size").value_or(DatabaseCacheSize);
-    DatabaseRecordCacheSize =
-        t.get_as<size_t>("record_cache_size").value_or(DatabaseRecordCacheSize);
-    DatabaseLegacyFileCodePage =
-        t.get_as<int>("legacy_file_code_page").value_or(DatabaseLegacyFileCodePage);
+    using Database::DatabaseCfg;
+
+    DatabaseCfg.defaultEnabled =
+        t.get_as<bool>("enable_by_default").value_or(DatabaseCfg.defaultEnabled);
+    DatabaseCfg.type      = t.get_as<std::string>("type").value_or(DatabaseCfg.type);
+    DatabaseCfg.url       = t.get_as<std::string>("url").value_or(DatabaseCfg.url);
+    DatabaseCfg.cacheSize = t.get_as<size_t>("cache_size").value_or(DatabaseCfg.cacheSize);
+    DatabaseCfg.recordCacheSize =
+        t.get_as<size_t>("record_cache_size").value_or(DatabaseCfg.recordCacheSize);
+    DatabaseCfg.legacyFileCodePage =
+        t.get_as<int>("legacy_file_code_page").value_or(DatabaseCfg.legacyFileCodePage);
     DatabaseMaker = nullptr;
 
-    if (DatabaseType == "yixindb") {
-        if (DatabaseURL.empty())
-            DatabaseURL = "rapfi.db";
+    if (DatabaseCfg.type == "yixindb") {
+        if (DatabaseCfg.url.empty())
+            DatabaseCfg.url = "rapfi.db";
 
-        bool compressedSave   = true;
-        bool saveOnClose      = true;
-        int  numBackupsOnSave = 1;
-        bool ignoreCorrupted  = false;
+        DatabaseCfg.yixindb = {};
         if (auto args = t.get_table("yixindb")) {
-            compressedSave   = args->get_as<bool>("compressed_save").value_or(compressedSave);
-            saveOnClose      = args->get_as<bool>("save_on_close").value_or(saveOnClose);
-            numBackupsOnSave = args->get_as<int>("num_backups_on_save").value_or(numBackupsOnSave);
-            ignoreCorrupted  = args->get_as<bool>("ignore_corrupted").value_or(ignoreCorrupted);
+            DatabaseCfg.yixindb.compressedSave =
+                args->get_as<bool>("compressed_save").value_or(DatabaseCfg.yixindb.compressedSave);
+            DatabaseCfg.yixindb.saveOnClose =
+                args->get_as<bool>("save_on_close").value_or(DatabaseCfg.yixindb.saveOnClose);
+            DatabaseCfg.yixindb.numBackupsOnSave = args->get_as<int>("num_backups_on_save")
+                                                       .value_or(DatabaseCfg.yixindb.numBackupsOnSave);
+            DatabaseCfg.yixindb.ignoreCorrupted =
+                args->get_as<bool>("ignore_corrupted").value_or(DatabaseCfg.yixindb.ignoreCorrupted);
         }
 
-        DatabaseMaker = [=](std::string utf8URL) -> std::unique_ptr<::Database::DBStorage> {
+        DatabaseMaker = [compressedSave   = DatabaseCfg.yixindb.compressedSave,
+                         saveOnClose      = DatabaseCfg.yixindb.saveOnClose,
+                         numBackupsOnSave = DatabaseCfg.yixindb.numBackupsOnSave,
+                         ignoreCorrupted  = DatabaseCfg.yixindb.ignoreCorrupted](
+                            std::string utf8URL) -> std::unique_ptr<::Database::DBStorage> {
             try {
                 auto dbPath    = std::filesystem::u8path(utf8URL);
                 bool existing  = std::filesystem::exists(dbPath);
@@ -725,79 +665,78 @@ void Config::readDatabase(const cpptoml::table &t)
             }
         };
     }
-    else if (!DatabaseType.empty()) {
-        throw std::runtime_error("unsupported database type " + DatabaseType);
+    else if (!DatabaseCfg.type.empty()) {
+        throw std::runtime_error("unsupported database type " + DatabaseCfg.type);
     }
 
     if (auto s = t.get_table("search")) {
-        DatabaseReadonlyMode         = s->get_as<bool>("readonly_mode").value_or(false);
-        DatabaseMandatoryParentWrite = s->get_as<bool>("mandatory_parent_write").value_or(true);
-        DatabaseQueryPly             = s->get_as<int>("query_ply").value_or(DatabaseQueryPly);
-        DatabaseQueryPVIterPerPlyIncrement = s->get_as<int>("pv_iter_per_ply_increment")
-                                                 .value_or(DatabaseQueryPVIterPerPlyIncrement);
-        DatabaseQueryNonPVIterPerPlyIncrement =
-            s->get_as<int>("nonpv_iter_per_ply_increment")
-                .value_or(DatabaseQueryNonPVIterPerPlyIncrement);
+        auto &dbs        = DatabaseCfg.search;
+        dbs.readonlyMode = s->get_as<bool>("readonly_mode").value_or(false);
+        dbs.mandatoryParentWrite = s->get_as<bool>("mandatory_parent_write").value_or(true);
+        dbs.queryPly             = s->get_as<int>("query_ply").value_or(dbs.queryPly);
+        dbs.queryPVIterPerPlyIncrement =
+            s->get_as<int>("pv_iter_per_ply_increment").value_or(dbs.queryPVIterPerPlyIncrement);
+        dbs.queryNonPVIterPerPlyIncrement = s->get_as<int>("nonpv_iter_per_ply_increment")
+                                                .value_or(dbs.queryNonPVIterPerPlyIncrement);
 
-        DatabasePVWritePly = s->get_as<int>("pv_write_ply").value_or(DatabasePVWritePly);
-        DatabasePVWriteMinDepth =
-            s->get_as<int>("pv_write_min_depth").value_or(DatabasePVWriteMinDepth);
+        dbs.pvWritePly      = s->get_as<int>("pv_write_ply").value_or(dbs.pvWritePly);
+        dbs.pvWriteMinDepth = s->get_as<int>("pv_write_min_depth").value_or(dbs.pvWriteMinDepth);
 
-        DatabaseNonPVWritePly = s->get_as<int>("nonpv_write_ply").value_or(DatabaseNonPVWritePly);
-        DatabaseNonPVWriteMinDepth =
-            s->get_as<int>("nonpv_write_min_depth").value_or(DatabaseNonPVWriteMinDepth);
+        dbs.nonPVWritePly = s->get_as<int>("nonpv_write_ply").value_or(dbs.nonPVWritePly);
+        dbs.nonPVWriteMinDepth =
+            s->get_as<int>("nonpv_write_min_depth").value_or(dbs.nonPVWriteMinDepth);
 
-        DatabaseWriteValueRange =
-            s->get_as<int>("write_value_range").value_or(DatabaseWriteValueRange);
+        dbs.writeValueRange = s->get_as<int>("write_value_range").value_or(dbs.writeValueRange);
 
-        DatabaseMateWritePly = s->get_as<int>("mate_write_ply").value_or(DatabaseMateWritePly);
-        DatabaseMateWriteMinDepthExact =
-            s->get_as<int>("mate_write_min_depth_exact").value_or(DatabaseMateWriteMinDepthExact);
-        DatabaseMateWriteMinDepthNonExact = s->get_as<int>("mate_write_min_depth_nonexact")
-                                                .value_or(DatabaseMateWriteMinDepthNonExact);
-        DatabaseMateWriteMinStep =
-            s->get_as<int>("mate_write_min_step").value_or(DatabaseMateWriteMinStep);
+        dbs.mateWritePly = s->get_as<int>("mate_write_ply").value_or(dbs.mateWritePly);
+        dbs.mateWriteMinDepthExact =
+            s->get_as<int>("mate_write_min_depth_exact").value_or(dbs.mateWriteMinDepthExact);
+        dbs.mateWriteMinDepthNonExact = s->get_as<int>("mate_write_min_depth_nonexact")
+                                            .value_or(dbs.mateWriteMinDepthNonExact);
+        dbs.mateWriteMinStep =
+            s->get_as<int>("mate_write_min_step").value_or(dbs.mateWriteMinStep);
 
-        DatabaseExactOverwritePly =
-            s->get_as<int>("exact_overwrite_ply").value_or(DatabaseExactOverwritePly);
-        DatabaseNonExactOverwritePly =
-            s->get_as<int>("nonexact_overwrite_ply").value_or(DatabaseNonExactOverwritePly);
+        dbs.exactOverwritePly =
+            s->get_as<int>("exact_overwrite_ply").value_or(dbs.exactOverwritePly);
+        dbs.nonExactOverwritePly =
+            s->get_as<int>("nonexact_overwrite_ply").value_or(dbs.nonExactOverwritePly);
 
         if (auto overwriteRule =
                 s->get_as<std::string>("overwrite_rule").value_or("better_value_depth_bound");
             overwriteRule == "better_value_depth_bound")
-            DatabaseOverwriteRule = ::Database::OverwriteRule::BetterValueDepthBound;
+            dbs.overwriteRule = ::Database::OverwriteRule::BetterValueDepthBound;
         else if (overwriteRule == "better_depth_bound")
-            DatabaseOverwriteRule = ::Database::OverwriteRule::BetterDepthBound;
+            dbs.overwriteRule = ::Database::OverwriteRule::BetterDepthBound;
         else if (overwriteRule == "better_value")
-            DatabaseOverwriteRule = ::Database::OverwriteRule::BetterValue;
+            dbs.overwriteRule = ::Database::OverwriteRule::BetterValue;
         else if (overwriteRule == "better_label")
-            DatabaseOverwriteRule = ::Database::OverwriteRule::BetterLabel;
+            dbs.overwriteRule = ::Database::OverwriteRule::BetterLabel;
         else if (overwriteRule == "always")
-            DatabaseOverwriteRule = ::Database::OverwriteRule::Always;
+            dbs.overwriteRule = ::Database::OverwriteRule::Always;
         else if (overwriteRule == "disabled")
-            DatabaseOverwriteRule = ::Database::OverwriteRule::Disabled;
+            dbs.overwriteRule = ::Database::OverwriteRule::Disabled;
         else
             MESSAGEL("unknown database overwrite rule " << overwriteRule << ", keep it unchanged.");
 
-        DatabaseOverwriteExactBias =
-            s->get_as<int>("overwrite_exact_bias").value_or(DatabaseOverwriteExactBias);
-        DatabaseOverwriteDepthBoundBias =
-            s->get_as<int>("overwrite_depth_bound_bias").value_or(DatabaseOverwriteDepthBoundBias);
-        DatabaseQueryResultDepthBoundBias = s->get_as<int>("query_result_depth_bound_bias")
-                                                .value_or(DatabaseQueryResultDepthBoundBias);
+        dbs.overwriteExactBias =
+            s->get_as<int>("overwrite_exact_bias").value_or(dbs.overwriteExactBias);
+        dbs.overwriteDepthBoundBias =
+            s->get_as<int>("overwrite_depth_bound_bias").value_or(dbs.overwriteDepthBoundBias);
+        dbs.queryResultDepthBoundBias =
+            s->get_as<int>("query_result_depth_bound_bias").value_or(dbs.queryResultDepthBoundBias);
     }
 
     if (auto s = t.get_table("libfile")) {
-        DatabaseLibBlackWinMark    = s->get_as<std::string>("black_win_mark").value_or("a")[0];
-        DatabaseLibWhiteWinMark    = s->get_as<std::string>("white_win_mark").value_or("a")[0];
-        DatabaseLibBlackLoseMark   = s->get_as<std::string>("black_lose_mark").value_or("c")[0];
-        DatabaseLibWhiteLoseMark   = s->get_as<std::string>("white_lose_mark").value_or("c")[0];
-        DatabaseLibIgnoreComment   = s->get_as<bool>("ignore_comment").value_or(false);
-        DatabaseLibIgnoreBoardText = s->get_as<bool>("ignore_board_text").value_or(false);
+        auto &lib           = DatabaseCfg.libfile;
+        lib.blackWinMark    = s->get_as<std::string>("black_win_mark").value_or("a")[0];
+        lib.whiteWinMark    = s->get_as<std::string>("white_win_mark").value_or("a")[0];
+        lib.blackLoseMark   = s->get_as<std::string>("black_lose_mark").value_or("c")[0];
+        lib.whiteLoseMark   = s->get_as<std::string>("white_lose_mark").value_or("c")[0];
+        lib.ignoreComment   = s->get_as<bool>("ignore_comment").value_or(false);
+        lib.ignoreBoardText = s->get_as<bool>("ignore_board_text").value_or(false);
     }
 
-    if (DatabaseDefaultEnabled)
+    if (DatabaseCfg.defaultEnabled)
         Search::Engine.setupDatabase(createDefaultDBStorage());
 }
 
@@ -997,5 +936,6 @@ std::unique_ptr<::Search::Searcher> Config::createSearcher(std::string searcherN
 
 std::unique_ptr<::Database::DBStorage> Config::createDefaultDBStorage(std::string utf8URL)
 {
-    return DatabaseMaker ? DatabaseMaker(utf8URL.empty() ? DatabaseURL : utf8URL) : nullptr;
+    return DatabaseMaker ? DatabaseMaker(utf8URL.empty() ? Database::DatabaseCfg.url : utf8URL)
+                         : nullptr;
 }

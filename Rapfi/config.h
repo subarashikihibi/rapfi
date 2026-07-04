@@ -38,9 +38,8 @@ class Searcher;  // forward declaration
 }
 
 namespace Database {
-class DBStorage;           // forward declaration
-enum class OverwriteRule;  // forward declaration
-}  // namespace Database
+class DBStorage;  // forward declaration
+}
 
 namespace Config {
 
@@ -66,45 +65,6 @@ extern CoordConvertionMode IOCoordMode;
 extern CandidateRange      DefaultCandidateRange;
 extern size_t              MemoryReservedMB[RULE_NB];
 extern size_t              DefaultTTSizeKB;
-
-// -------------------------------------------------
-// Database options
-extern bool        DatabaseDefaultEnabled;
-extern uint16_t    DatabaseLegacyFileCodePage;
-extern std::string DatabaseType;
-extern std::string DatabaseURL;
-extern size_t      DatabaseCacheSize;
-extern size_t      DatabaseRecordCacheSize;
-
-// Library import options
-extern char DatabaseLibBlackWinMark;
-extern char DatabaseLibWhiteWinMark;
-extern char DatabaseLibBlackLoseMark;
-extern char DatabaseLibWhiteLoseMark;
-extern bool DatabaseLibIgnoreComment;
-extern bool DatabaseLibIgnoreBoardText;
-
-// Database search options
-extern bool                      DatabaseReadonlyMode;
-extern bool                      DatabaseMandatoryParentWrite;
-extern int                       DatabaseQueryPly;
-extern int                       DatabaseQueryPVIterPerPlyIncrement;
-extern int                       DatabaseQueryNonPVIterPerPlyIncrement;
-extern int                       DatabasePVWritePly;
-extern int                       DatabasePVWriteMinDepth;
-extern int                       DatabaseNonPVWritePly;
-extern int                       DatabaseNonPVWriteMinDepth;
-extern int                       DatabaseWriteValueRange;
-extern int                       DatabaseMateWritePly;
-extern int                       DatabaseMateWriteMinDepthExact;
-extern int                       DatabaseMateWriteMinDepthNonExact;
-extern int                       DatabaseMateWriteMinStep;
-extern int                       DatabaseExactOverwritePly;
-extern int                       DatabaseNonExactOverwritePly;
-extern ::Database::OverwriteRule DatabaseOverwriteRule;
-extern int                       DatabaseOverwriteExactBias;
-extern int                       DatabaseOverwriteDepthBoundBias;
-extern int                       DatabaseQueryResultDepthBoundBias;
 
 // -------------------------------------------------
 // Config loading & exporting

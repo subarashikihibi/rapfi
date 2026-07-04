@@ -171,6 +171,7 @@ set(CORE_SOURCES
     core/version.cpp
 
     database/dbclient.cpp
+    database/dbconfig.cpp
     database/dbutils.cpp
     database/dbtypes.cpp
     database/renlib.cpp
@@ -236,6 +237,7 @@ set(HEADERS
 
     database/cache.h
     database/dbclient.h
+    database/dbconfig.h
     database/dbstorage.h
     database/dbtypes.h
     database/parallelwalk.h

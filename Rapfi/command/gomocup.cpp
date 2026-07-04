@@ -20,6 +20,7 @@
 #include "../core/iohelper.h"
 #include "../core/utils.h"
 #include "../database/dbclient.h"
+#include "../database/dbconfig.h"
 #include "../database/dbutils.h"
 #include "../database/yxdbstorage.h"
 #include "../eval/eval.h"
@@ -369,7 +370,7 @@ void getOption()
     /////////////////////////////////////////////////
     else if (token == "DATABASE_READONLY") {
         std::cin >> val;
-        Config::DatabaseReadonlyMode = val == 1;
+        Database::DatabaseCfg.search.readonlyMode = val == 1;
     }
     else if (token == "SWAPABLE") {
         std::cin >> val;
@@ -476,8 +477,8 @@ void reloadConfig()
 void setDatabase()
 {
     auto databasePath = readPathFromInput();
-    if (!databasePath.empty() && !Config::DatabaseType.empty()) {
-        Config::DatabaseURL     = databasePath.u8string();
+    if (!databasePath.empty() && !Database::DatabaseCfg.type.empty()) {
+        Database::DatabaseCfg.url     = databasePath.u8string();
         auto newDatabaseStorage = Config::createDefaultDBStorage();
         if (newDatabaseStorage)
             Search::Engine.setupDatabase(std::move(newDatabaseStorage));
@@ -855,7 +856,7 @@ void queryDatabaseAll(bool getPosition)
         MESSAGEL("DATABASE DONE");
 
         // Insert a new none record if no record is found at this position
-        if (!Config::DatabaseReadonlyMode) {
+        if (!Database::DatabaseCfg.search.readonlyMode) {
             DBRecord record;
             if (board->ply() > 0 && !dbClient.query(*board, options.rule, record))
                 dbClient.save(*board, options.rule, DBRecord {LABEL_NONE}, OverwriteRule::Disabled);
@@ -904,7 +905,7 @@ void editDatabaseTVD()
     std::cin >> updateMask >> newLabel >> newValue >> newDepth;
     getDatabasePosition();
 
-    if (Search::Engine.dbStorage() && !Config::DatabaseReadonlyMode) {
+    if (Search::Engine.dbStorage() && !Database::DatabaseCfg.search.readonlyMode) {
         switch (newLabel) {
         case 'W': newLabel = LABEL_WIN; break;
         case 'L': newLabel = LABEL_LOSE; break;
@@ -929,7 +930,7 @@ void editDatabaseText()
     std::cin >> std::ws >> std::quoted(newText);
     getDatabasePosition();
 
-    if (Search::Engine.dbStorage() && !Config::DatabaseReadonlyMode) {
+    if (Search::Engine.dbStorage() && !Database::DatabaseCfg.search.readonlyMode) {
         DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_TEXT);
         DBRecord record;
         if (!dbClient.query(*board, options.rule, record))
@@ -955,7 +956,7 @@ void editDatabaseBoardLabel()
     if (!pos.has_value())
         return;
 
-    if (Search::Engine.dbStorage() && !Config::DatabaseReadonlyMode) {
+    if (Search::Engine.dbStorage() && !Database::DatabaseCfg.search.readonlyMode) {
         DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_TEXT);
         dbClient.setBoardText(*board, options.rule, *pos, ConsoleCPToUTF8(newText));
     }
@@ -1083,7 +1084,7 @@ void deleteDatabaseAll(bool getPosition)
     if (getPosition)
         getDatabasePosition();
 
-    if (Search::Engine.dbStorage() && !Config::DatabaseReadonlyMode) {
+    if (Search::Engine.dbStorage() && !Database::DatabaseCfg.search.readonlyMode) {
         MESSAGEL("Deleting child records, this might take a while...");
         auto   startTime        = now();
         size_t sizeBeforeDelete = Search::Engine.dbStorage()->size();
@@ -1106,7 +1107,7 @@ void deleteDatabaseOne(bool getPosition)
     if (getPosition)
         getDatabasePosition();
 
-    if (Search::Engine.dbStorage() && !Config::DatabaseReadonlyMode) {
+    if (Search::Engine.dbStorage() && !Database::DatabaseCfg.search.readonlyMode) {
         DBClient dbClient(*Search::Engine.dbStorage(), RECORD_MASK_ALL);
         dbClient.del(*board, options.rule);
     }
@@ -1144,7 +1145,7 @@ void mergeDatabase()
         if (auto dbToMerge = Config::createDefaultDBStorage(dbPathUTF8)) {
             size_t writeCount = mergeDatabase(*Search::Engine.dbStorage(),
                                               *dbToMerge,
-                                              Config::DatabaseOverwriteRule);
+                                              Database::DatabaseCfg.search.overwriteRule);
             MESSAGEL("Merged " << writeCount << " out of " << dbToMerge->size()
                                << " records into the database.");
         }

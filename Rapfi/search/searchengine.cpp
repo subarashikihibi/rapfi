@@ -20,6 +20,7 @@
 
 #include "../config.h"
 #include "../database/dbclient.h"
+#include "../database/dbconfig.h"
 #include "../database/dbstorage.h"
 #include "../eval/evaluator.h"
 #include "../game/board.h"
@@ -120,25 +121,26 @@ SearchEngine Engine;
 
 DatabaseSearchParams DatabaseSearchParams::captureFromConfig()
 {
+    const auto          &cfg = Database::DatabaseCfg.search;
     DatabaseSearchParams p;
-    p.readonlyMode                  = Config::DatabaseReadonlyMode;
-    p.mandatoryParentWrite          = Config::DatabaseMandatoryParentWrite;
-    p.queryPly                      = Config::DatabaseQueryPly;
-    p.queryPVIterPerPlyIncrement    = Config::DatabaseQueryPVIterPerPlyIncrement;
-    p.queryNonPVIterPerPlyIncrement = Config::DatabaseQueryNonPVIterPerPlyIncrement;
-    p.queryResultDepthBoundBias     = Config::DatabaseQueryResultDepthBoundBias;
-    p.mateWritePly                  = Config::DatabaseMateWritePly;
-    p.mateWriteMinStep              = Config::DatabaseMateWriteMinStep;
-    p.mateWriteMinDepthExact        = Config::DatabaseMateWriteMinDepthExact;
-    p.mateWriteMinDepthNonExact     = Config::DatabaseMateWriteMinDepthNonExact;
-    p.pvWritePly                    = Config::DatabasePVWritePly;
-    p.pvWriteMinDepth               = Config::DatabasePVWriteMinDepth;
-    p.nonPVWritePly                 = Config::DatabaseNonPVWritePly;
-    p.nonPVWriteMinDepth            = Config::DatabaseNonPVWriteMinDepth;
-    p.writeValueRange               = Config::DatabaseWriteValueRange;
-    p.exactOverwritePly             = Config::DatabaseExactOverwritePly;
-    p.nonExactOverwritePly          = Config::DatabaseNonExactOverwritePly;
-    p.overwriteRule                 = Config::DatabaseOverwriteRule;
+    p.readonlyMode                  = cfg.readonlyMode;
+    p.mandatoryParentWrite          = cfg.mandatoryParentWrite;
+    p.queryPly                      = cfg.queryPly;
+    p.queryPVIterPerPlyIncrement    = cfg.queryPVIterPerPlyIncrement;
+    p.queryNonPVIterPerPlyIncrement = cfg.queryNonPVIterPerPlyIncrement;
+    p.queryResultDepthBoundBias     = cfg.queryResultDepthBoundBias;
+    p.mateWritePly                  = cfg.mateWritePly;
+    p.mateWriteMinStep              = cfg.mateWriteMinStep;
+    p.mateWriteMinDepthExact        = cfg.mateWriteMinDepthExact;
+    p.mateWriteMinDepthNonExact     = cfg.mateWriteMinDepthNonExact;
+    p.pvWritePly                    = cfg.pvWritePly;
+    p.pvWriteMinDepth               = cfg.pvWriteMinDepth;
+    p.nonPVWritePly                 = cfg.nonPVWritePly;
+    p.nonPVWriteMinDepth            = cfg.nonPVWriteMinDepth;
+    p.writeValueRange               = cfg.writeValueRange;
+    p.exactOverwritePly             = cfg.exactOverwritePly;
+    p.nonExactOverwritePly          = cfg.nonExactOverwritePly;
+    p.overwriteRule                 = cfg.overwriteRule;
     return p;
 }
 
