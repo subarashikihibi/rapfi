@@ -362,7 +362,7 @@ SearchThread *ABSearcher::pickBestThread(SearchEngine &threads) const
     SearchThread *bestThread = threads.main();
 
     // In case of database recording mode, only use main thread result.
-    if (bestThread->dbClient && !Config::DatabaseReadonlyMode)
+    if (bestThread->dbClient && !threads.ctx.dbParams.readonlyMode)
         return bestThread;
 
     // Find minimum value of all threads
@@ -589,14 +589,15 @@ std::optional<Value> probeDatabaseAtNode(Board        &board,
     if (!thisThread->dbClient)
         return std::nullopt;
 
-    ABSearchData  *searchData = thisThread->searchDataAs<ABSearchData>();
-    SearchOptions &options    = thisThread->options();
+    ABSearchData               *searchData = thisThread->searchDataAs<ABSearchData>();
+    SearchOptions              &options    = thisThread->options();
+    const DatabaseSearchParams &dbParams   = thisThread->engine.ctx.dbParams;
 
     Database::DBClient &dbClient          = *thisThread->dbClient;
     int                 queryPlyIncrement = searchData->rootDepth
-                            / (PvNode ? Config::DatabaseQueryPVIterPerPlyIncrement
-                                      : Config::DatabaseQueryNonPVIterPerPlyIncrement);
-    int queryPly = Config::DatabaseQueryPly + queryPlyIncrement;
+                            / (PvNode ? dbParams.queryPVIterPerPlyIncrement
+                                      : dbParams.queryNonPVIterPerPlyIncrement);
+    int queryPly = dbParams.queryPly + queryPlyIncrement;
 
     if (ss->skipMove           // Skip query in singular extension
         || ss->ply > queryPly  // Only query in the first plies to avoid large speed loss
@@ -635,7 +636,7 @@ std::optional<Value> probeDatabaseAtNode(Board        &board,
     }
 
     if (tryCut && !RootNode) {
-        int  dbDepth = db.record.depth() + Config::DatabaseQueryResultDepthBoundBias;
+        int  dbDepth = db.record.depth() + dbParams.queryResultDepthBoundBias;
         bool dbCut   = dbDepth > depth
                      && (db.value >= beta ? (db.bound & BOUND_LOWER) : (db.bound & BOUND_UPPER));
         if (!PvNode && dbCut
@@ -675,13 +676,14 @@ void writeDatabaseRecord(Board              &board,
     constexpr bool PvNode   = NT == PV || NT == Root;
     constexpr bool RootNode = NT == Root;
 
-    SearchThread  *thisThread = board.thisThread();
-    ABSearchData  *searchData = thisThread->searchDataAs<ABSearchData>();
-    SearchOptions &options    = thisThread->options();
-    Pos            skipMove   = ss->skipMove;
+    SearchThread               *thisThread = board.thisThread();
+    ABSearchData               *searchData = thisThread->searchDataAs<ABSearchData>();
+    SearchOptions              &options    = thisThread->options();
+    const DatabaseSearchParams &dbParams   = thisThread->engine.ctx.dbParams;
+    Pos                         skipMove   = ss->skipMove;
 
     if (thisThread->dbClient
-        && !Config::DatabaseReadonlyMode      // Never write in database readonly mode
+        && !dbParams.readonlyMode             // Never write in database readonly mode
         && !options.balanceMode               // Never write when we are doing balanced search
         && (!skipMove || ss->dbChildWritten)  // Never write when in singular extension
         && ss->numNullMoves == 0              // Never write when in null move search
@@ -692,25 +694,25 @@ void writeDatabaseRecord(Board              &board,
 
         int writePly, writeDepth;
         if (isWin || isLoss) {
-            if (ss->ply <= Config::DatabaseMateWritePly
-                && mate_step(bestValue, ss->ply) >= Config::DatabaseMateWriteMinStep) {
-                writePly   = Config::DatabaseMateWritePly;
-                writeDepth = exact ? Config::DatabaseMateWriteMinDepthExact
-                                   : Config::DatabaseMateWriteMinDepthNonExact;
+            if (ss->ply <= dbParams.mateWritePly
+                && mate_step(bestValue, ss->ply) >= dbParams.mateWriteMinStep) {
+                writePly   = dbParams.mateWritePly;
+                writeDepth = exact ? dbParams.mateWriteMinDepthExact
+                                   : dbParams.mateWriteMinDepthNonExact;
             }
             else
                 writePly = -1, writeDepth = MAX_DEPTH;
         }
         else {
-            writePly   = exact ? Config::DatabasePVWritePly : Config::DatabaseNonPVWritePly;
-            writeDepth = exact ? (std::abs(bestValue) <= Config::DatabaseWriteValueRange
-                                      ? Config::DatabasePVWriteMinDepth
+            writePly   = exact ? dbParams.pvWritePly : dbParams.nonPVWritePly;
+            writeDepth = exact ? (std::abs(bestValue) <= dbParams.writeValueRange
+                                      ? dbParams.pvWriteMinDepth
                                       : MAX_DEPTH)
-                         : bound == BOUND_UPPER ? (bestValue <= Config::DatabaseWriteValueRange
-                                                       ? Config::DatabaseNonPVWriteMinDepth
+                         : bound == BOUND_UPPER ? (bestValue <= dbParams.writeValueRange
+                                                       ? dbParams.nonPVWriteMinDepth
                                                        : MAX_DEPTH)
-                                                : (-bestValue >= Config::DatabaseWriteValueRange
-                                                       ? Config::DatabaseNonPVWriteMinDepth
+                                                : (-bestValue >= dbParams.writeValueRange
+                                                       ? dbParams.nonPVWriteMinDepth
                                                        : MAX_DEPTH);
         }
 
@@ -722,8 +724,8 @@ void writeDatabaseRecord(Board              &board,
                    && (db.hit || depth >= writeDepth + isWin)
             || db.hit && (isWin || isLoss)  // Always try overwrite existing record with W/L record
             || PvNode && db.hit             // Try overwrite existing winrate with newer winrate
-                   && ss->ply <= (exact ? Config::DatabaseExactOverwritePly
-                                        : Config::DatabaseNonExactOverwritePly)) {
+                   && ss->ply <= (exact ? dbParams.exactOverwritePly
+                                        : dbParams.nonExactOverwritePly)) {
             // Assume we have already read record from the database
             Database::DBRecord newRecord;
 
@@ -740,13 +742,13 @@ void writeDatabaseRecord(Board              &board,
 
             // Write if there is no db hit, or the new record satisfy the overwrite rule
             if (!db.hit
-                || Database::checkOverwrite(db.record, newRecord, Config::DatabaseOverwriteRule)) {
+                || Database::checkOverwrite(db.record, newRecord, dbParams.overwriteRule)) {
                 thisThread->dbClient->save(board,
                                            Rule,
                                            newRecord,
                                            db.hit ? Database::OverwriteRule::Always
-                                                  : Config::DatabaseOverwriteRule);
-                if (Config::DatabaseMandatoryParentWrite)
+                                                  : dbParams.overwriteRule);
+                if (dbParams.mandatoryParentWrite)
                     (ss - 1)->dbChildWritten = true;
             }
         }
@@ -1451,11 +1453,11 @@ moves_loop:
         if (thisThread->engine.isTerminating()) {
             if (thisThread->dbClient
                 && !db.hit  // Write when no dbHit, we never overwrite any existing record with null
-                && !Config::DatabaseReadonlyMode  // Never write in database readonly mode
+                && !ctx.dbParams.readonlyMode  // Never write in database readonly mode
                 && ss->dbChildWritten  // Write anyway if we have children that have already written
             ) {
                 Database::DBRecord newRecord {Database::LABEL_NULL, 0, 0};
-                thisThread->dbClient->save(board, Rule, newRecord, Config::DatabaseOverwriteRule);
+                thisThread->dbClient->save(board, Rule, newRecord, ctx.dbParams.overwriteRule);
                 (ss - 1)->dbChildWritten = true;
             }
             return VALUE_NONE;
@@ -1562,7 +1564,7 @@ moves_loop:
             bestValue = std::max(bestValue, db.value);
         else if (db.labelBound == BOUND_UPPER)
             bestValue = std::min(bestValue, db.value);
-        else if (int dbDepth = db.record.depth() + Config::DatabaseQueryResultDepthBoundBias;
+        else if (int dbDepth = db.record.depth() + ctx.dbParams.queryResultDepthBoundBias;
                  (db.bound == BOUND_EXACT                           // Exact-cut
                   || db.bound == BOUND_LOWER && db.value >= beta    // Beta-cut
                   || db.bound == BOUND_UPPER && db.value <= alpha)  // Alpha-cut

@@ -115,6 +115,30 @@ void generateRootMoves(SearchThread &th)
 /// Global search engine
 SearchEngine Engine;
 
+DatabaseSearchParams DatabaseSearchParams::captureFromConfig()
+{
+    DatabaseSearchParams p;
+    p.readonlyMode                  = Config::DatabaseReadonlyMode;
+    p.mandatoryParentWrite          = Config::DatabaseMandatoryParentWrite;
+    p.queryPly                      = Config::DatabaseQueryPly;
+    p.queryPVIterPerPlyIncrement    = Config::DatabaseQueryPVIterPerPlyIncrement;
+    p.queryNonPVIterPerPlyIncrement = Config::DatabaseQueryNonPVIterPerPlyIncrement;
+    p.queryResultDepthBoundBias     = Config::DatabaseQueryResultDepthBoundBias;
+    p.mateWritePly                  = Config::DatabaseMateWritePly;
+    p.mateWriteMinStep              = Config::DatabaseMateWriteMinStep;
+    p.mateWriteMinDepthExact        = Config::DatabaseMateWriteMinDepthExact;
+    p.mateWriteMinDepthNonExact     = Config::DatabaseMateWriteMinDepthNonExact;
+    p.pvWritePly                    = Config::DatabasePVWritePly;
+    p.pvWriteMinDepth               = Config::DatabasePVWriteMinDepth;
+    p.nonPVWritePly                 = Config::DatabaseNonPVWritePly;
+    p.nonPVWriteMinDepth            = Config::DatabaseNonPVWriteMinDepth;
+    p.writeValueRange               = Config::DatabaseWriteValueRange;
+    p.exactOverwritePly             = Config::DatabaseExactOverwritePly;
+    p.nonExactOverwritePly          = Config::DatabaseNonExactOverwritePly;
+    p.overwriteRule                 = Config::DatabaseOverwriteRule;
+    return p;
+}
+
 void SearchContext::reset(const SearchOptions &opts, bool ponder)
 {
     options                  = opts;
@@ -123,6 +147,7 @@ void SearchContext::reset(const SearchOptions &opts, bool ponder)
     startPonderAfterThinking = false;
     resultAction             = ActionType::Move;
     bestMove                 = Pos::NONE;
+    dbParams                 = DatabaseSearchParams::captureFromConfig();
 }
 
 void SearchContext::checkExit(uint32_t elapsedCalls)

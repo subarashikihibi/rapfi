@@ -31,7 +31,8 @@
 class Board;  // forward declaration
 
 namespace Database {
-class DBStorage;  // forward declaration
+class DBStorage;           // forward declaration
+enum class OverwriteRule;  // forward declaration (opaque)
 }
 namespace Evaluation {
 class Evaluator;  // forward declaration
@@ -42,6 +43,34 @@ namespace Search {
 class Searcher;      // forward declaration
 class SearchThread;  // forward declaration
 class SearchEngine;  // forward declaration
+
+/// Database access parameters captured once per search from Config, so the
+/// search node loop reads stable values without reaching into the config hub.
+/// (Pattern-setter for the Phase-4 per-module config structs.)
+struct DatabaseSearchParams
+{
+    bool readonlyMode;                   // Config::DatabaseReadonlyMode
+    bool mandatoryParentWrite;           // Config::DatabaseMandatoryParentWrite
+    int  queryPly;                       // Config::DatabaseQueryPly
+    int  queryPVIterPerPlyIncrement;     // Config::DatabaseQueryPVIterPerPlyIncrement
+    int  queryNonPVIterPerPlyIncrement;  // Config::DatabaseQueryNonPVIterPerPlyIncrement
+    int  queryResultDepthBoundBias;      // Config::DatabaseQueryResultDepthBoundBias
+    int  mateWritePly;                   // Config::DatabaseMateWritePly
+    int  mateWriteMinStep;               // Config::DatabaseMateWriteMinStep
+    int  mateWriteMinDepthExact;         // Config::DatabaseMateWriteMinDepthExact
+    int  mateWriteMinDepthNonExact;      // Config::DatabaseMateWriteMinDepthNonExact
+    int  pvWritePly;                     // Config::DatabasePVWritePly
+    int  pvWriteMinDepth;                // Config::DatabasePVWriteMinDepth
+    int  nonPVWritePly;                  // Config::DatabaseNonPVWritePly
+    int  nonPVWriteMinDepth;             // Config::DatabaseNonPVWriteMinDepth
+    int  writeValueRange;                // Config::DatabaseWriteValueRange
+    int  exactOverwritePly;              // Config::DatabaseExactOverwritePly
+    int  nonExactOverwritePly;           // Config::DatabaseNonExactOverwritePly
+    Database::OverwriteRule overwriteRule;  // Config::DatabaseOverwriteRule
+
+    /// Capture the current Config::Database* knob values.
+    static DatabaseSearchParams captureFromConfig();
+};
 
 /// SearchContext holds all state scoped to ONE search request: inputs copied at
 /// startThinking, shared per-search state, and the result outputs. One instance
@@ -66,6 +95,8 @@ struct SearchContext
     /// Should we start pondering after finishing this move?
     /// (set during search, read by the protocol thread)
     std::atomic_bool startPonderAfterThinking;
+    /// Database access parameters captured once per search from Config
+    DatabaseSearchParams dbParams;
 
     // --- Outputs ---
     /// Action type of the search result
