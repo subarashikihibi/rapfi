@@ -619,27 +619,13 @@ uint32_t searchNode(Node &node, Board &board, int ply, uint32_t newVisits)
     return actualNewVisits;
 }
 
-/// Select best move to play for the given node.
-/// @param node The node to compute selection value. Must be expanded.
-/// @param edgeIndices[out] The edge indices of selectable children.
-/// @param selectionValues[out] The selection values of selectable children.
-/// @param lcbValues[out] The lower confidence bound values of selectable children.
-///     Only filled when we are using LCB for selection.
-/// @param allowDirectPolicyMove If true and the node has no explored children,
-///     allow to select from those unexplored children by policy prior directly.
-/// @return The index of the best move (with highest selection value) to select.
-///     Returns -1 if there is no selectable children.
-int selectBestmoveOfChildNode(const Node            &node,
-                              std::vector<uint32_t> &edgeIndices,
-                              std::vector<float>    &selectionValues,
-                              std::vector<float>    &lcbValues,
-                              bool                   allowDirectPolicyMove)
+/// Bestmove-selection pass 1: fill edgeIndices/selectionValues from all
+/// expanded children of the node, accumulating their bound stats.
+/// @return Tuple of (best index, best selection value, accumulated max bound).
+std::tuple<int, float, ValueBound> computeSelectionValues(const Node            &node,
+                                                          std::vector<uint32_t> &edgeIndices,
+                                                          std::vector<float>    &selectionValues)
 {
-    assert(!node.isLeaf());
-    edgeIndices.clear();
-    selectionValues.clear();
-    lcbValues.clear();
-
     int        bestmoveIndex          = -1;
     float      bestmoveSelectionValue = std::numeric_limits<float>::lowest();
     ValueBound maxBound {-VALUE_INFINITE};
@@ -676,105 +662,185 @@ int selectBestmoveOfChildNode(const Node            &node,
         maxBound |= childNode->getBound();
     }
 
-    // Compute lower confidence bound values if needed
-    if (UseLCBForBestmoveSelection && !edgeIndices.empty()) {
-        int   bestLCBIndex = -1;
-        float bestLCBValue = std::numeric_limits<float>::lowest();
+    return {bestmoveIndex, bestmoveSelectionValue, maxBound};
+}
 
-        std::vector<float> lcbRadius;
+/// Bestmove-selection pass 2 (UseLCBForBestmoveSelection): fill lcbValues and
+/// give the best-LCB child a selection value bonus.
+/// @return The updated best index.
+int applyLCBSelection(const Node                  &node,
+                      const std::vector<uint32_t> &edgeIndices,
+                      std::vector<float>          &selectionValues,
+                      std::vector<float>          &lcbValues,
+                      int                          bestmoveIndex,
+                      float                        bestmoveSelectionValue)
+{
+    const EdgeArray &edges = *node.getEdges();
 
-        // Compute LCB values for all selectable children and find highest LCB value
-        for (size_t i = 0; i < edgeIndices.size(); i++) {
-            uint32_t    edgeIndex = edgeIndices[i];
-            const Edge &childEdge = edges[edgeIndex];
-            Node       *childNode = childEdge.getChild();
-            assert(childNode);
+    int   bestLCBIndex = -1;
+    float bestLCBValue = std::numeric_limits<float>::lowest();
 
-            float utilityMean = -childNode->getQ();
+    std::vector<float> lcbRadius;
 
-            // Only compute LCB for children with enough visits
-            uint32_t childVisits = childNode->getVisits();
-            if (childVisits < 2) {
-                lcbValues.push_back(utilityMean - 1e5f);
-                lcbRadius.push_back(1e4f);
-            }
-            else {
-                float utilityVar = childNode->getQVar();
-                float radius     = LCBStdevs * std::sqrt(utilityVar / childVisits);
-                lcbValues.push_back(utilityMean - radius);
-                lcbRadius.push_back(radius);
+    // Compute LCB values for all selectable children and find highest LCB value
+    for (size_t i = 0; i < edgeIndices.size(); i++) {
+        uint32_t    edgeIndex = edgeIndices[i];
+        const Edge &childEdge = edges[edgeIndex];
+        Node       *childNode = childEdge.getChild();
+        assert(childNode);
 
-                if (selectionValues[i] > 0
-                    && selectionValues[i] >= LCBMinVisitProp * bestmoveSelectionValue
-                    && lcbValues[i] > bestLCBValue) {
-                    bestLCBIndex = i;
-                    bestLCBValue = lcbValues[i];
-                }
-            }
+        float utilityMean = -childNode->getQ();
+
+        // Only compute LCB for children with enough visits
+        uint32_t childVisits = childNode->getVisits();
+        if (childVisits < 2) {
+            lcbValues.push_back(utilityMean - 1e5f);
+            lcbRadius.push_back(1e4f);
         }
+        else {
+            float utilityVar = childNode->getQVar();
+            float radius     = LCBStdevs * std::sqrt(utilityVar / childVisits);
+            lcbValues.push_back(utilityMean - radius);
+            lcbRadius.push_back(radius);
 
-        // Best LCB child gets a bonus on selection value
-        if (bestLCBIndex >= 0) {
-            float bestLCBSelectionValue = selectionValues[bestLCBIndex];
-            for (size_t i = 0; i < edgeIndices.size(); i++) {
-                if (i == bestLCBIndex)
-                    continue;
-
-                // Compute how much the best LCB value is better than the current child
-                float lcbBonus = bestLCBValue - lcbValues[i];
-                if (lcbBonus <= 0)
-                    continue;
-
-                // Compute how many times larger the radius can be before this LCB value is better
-                float gain   = std::min(lcbBonus / lcbRadius[i] + 1.0f, 5.0f);
-                float lbound = gain * gain * selectionValues[i];
-                if (lbound > bestLCBSelectionValue)
-                    bestLCBSelectionValue = lbound;
+            if (selectionValues[i] > 0
+                && selectionValues[i] >= LCBMinVisitProp * bestmoveSelectionValue
+                && lcbValues[i] > bestLCBValue) {
+                bestLCBIndex = i;
+                bestLCBValue = lcbValues[i];
             }
-            selectionValues[bestLCBIndex] = bestLCBSelectionValue;
-            bestmoveIndex                 = bestLCBIndex;
         }
     }
+
+    // Best LCB child gets a bonus on selection value
+    if (bestLCBIndex >= 0) {
+        float bestLCBSelectionValue = selectionValues[bestLCBIndex];
+        for (size_t i = 0; i < edgeIndices.size(); i++) {
+            if (i == bestLCBIndex)
+                continue;
+
+            // Compute how much the best LCB value is better than the current child
+            float lcbBonus = bestLCBValue - lcbValues[i];
+            if (lcbBonus <= 0)
+                continue;
+
+            // Compute how many times larger the radius can be before this LCB value is better
+            float gain   = std::min(lcbBonus / lcbRadius[i] + 1.0f, 5.0f);
+            float lbound = gain * gain * selectionValues[i];
+            if (lbound > bestLCBSelectionValue)
+                bestLCBSelectionValue = lbound;
+        }
+        selectionValues[bestLCBIndex] = bestLCBSelectionValue;
+        bestmoveIndex                 = bestLCBIndex;
+    }
+
+    return bestmoveIndex;
+}
+
+/// Bestmove-selection pass 3 (a proven mate exists below): reweight children to
+/// prefer the shortest proven mate.
+/// @param maxBound The bound accumulated by computeSelectionValues.
+/// @return The updated best index.
+int overrideBestByMateBounds(const Node                  &node,
+                             ValueBound                   maxBound,
+                             const std::vector<uint32_t> &edgeIndices,
+                             std::vector<float>          &selectionValues)
+{
+    const EdgeArray &edges = *node.getEdges();
+
+    int   bestmoveIndex          = -1;
+    float bestmoveSelectionValue = std::numeric_limits<float>::lowest();
+
+    // Make best move the one with the maximum lower bound
+    for (size_t i = 0; i < edgeIndices.size(); i++) {
+        uint32_t    edgeIndex = edgeIndices[i];
+        const Edge &childEdge = edges[edgeIndex];
+        Node       *childNode = childEdge.getChild();
+        assert(childNode);
+
+        Value childLowerBound = static_cast<Value>(-childNode->getBound().upper);
+        if (childLowerBound < VALUE_MATE_IN_MAX_PLY)  // Downweight non-proven mate moves
+            selectionValues[i] *= 1e-9f;
+        else if (childLowerBound < maxBound.lower)  // Downweight non-shorted mate moves
+            selectionValues[i] *= 1e-3f * (1 + maxBound.lower - childLowerBound);
+
+        // Find the best edge with the highest selection value
+        if (selectionValues[i] > bestmoveSelectionValue) {
+            bestmoveIndex          = i;
+            bestmoveSelectionValue = selectionValues[i];
+        }
+    }
+
+    return bestmoveIndex;
+}
+
+/// Bestmove-selection pass 4 (no expanded children): select from unexplored
+/// children by their raw policy prior.
+/// @return The updated best index.
+int selectByRawPolicy(const Node            &node,
+                      std::vector<uint32_t> &edgeIndices,
+                      std::vector<float>    &selectionValues)
+{
+    const EdgeArray &edges = *node.getEdges();
+
+    int   bestmoveIndex          = -1;
+    float bestmoveSelectionValue = std::numeric_limits<float>::lowest();
+
+    for (uint32_t edgeIndex = 0; edgeIndex < edges.numEdges; edgeIndex++) {
+        const Edge &childEdge   = edges[edgeIndex];
+        float       childPolicy = childEdge.getP();
+        if (childPolicy > bestmoveSelectionValue) {
+            bestmoveIndex          = edgeIndices.size();
+            bestmoveSelectionValue = childPolicy;
+        }
+        edgeIndices.push_back(edgeIndex);
+        selectionValues.push_back(childPolicy);
+    }
+    assert(!edgeIndices.empty());
+
+    return bestmoveIndex;
+}
+
+/// Select best move to play for the given node.
+/// @param node The node to compute selection value. Must be expanded.
+/// @param edgeIndices[out] The edge indices of selectable children.
+/// @param selectionValues[out] The selection values of selectable children.
+/// @param lcbValues[out] The lower confidence bound values of selectable children.
+///     Only filled when we are using LCB for selection.
+/// @param allowDirectPolicyMove If true and the node has no explored children,
+///     allow to select from those unexplored children by policy prior directly.
+/// @return The index of the best move (with highest selection value) to select.
+///     Returns -1 if there is no selectable children.
+int selectBestmoveOfChildNode(const Node            &node,
+                              std::vector<uint32_t> &edgeIndices,
+                              std::vector<float>    &selectionValues,
+                              std::vector<float>    &lcbValues,
+                              bool                   allowDirectPolicyMove)
+{
+    assert(!node.isLeaf());
+    edgeIndices.clear();
+    selectionValues.clear();
+    lcbValues.clear();
+
+    auto [bestmoveIndex, bestmoveSelectionValue, maxBound] =
+        computeSelectionValues(node, edgeIndices, selectionValues);
+
+    // Compute lower confidence bound values if needed
+    if (UseLCBForBestmoveSelection && !edgeIndices.empty())
+        bestmoveIndex = applyLCBSelection(node,
+                                          edgeIndices,
+                                          selectionValues,
+                                          lcbValues,
+                                          bestmoveIndex,
+                                          bestmoveSelectionValue);
 
     // Select best check mate move if possible
-    if (maxBound.lower >= VALUE_MATE_IN_MAX_PLY) {
-        bestmoveIndex          = -1;
-        bestmoveSelectionValue = std::numeric_limits<float>::lowest();
-        // Make best move the one with the maximum lower bound
-        for (size_t i = 0; i < edgeIndices.size(); i++) {
-            uint32_t    edgeIndex = edgeIndices[i];
-            const Edge &childEdge = edges[edgeIndex];
-            Node       *childNode = childEdge.getChild();
-            assert(childNode);
-
-            Value childLowerBound = static_cast<Value>(-childNode->getBound().upper);
-            if (childLowerBound < VALUE_MATE_IN_MAX_PLY)  // Downweight non-proven mate moves
-                selectionValues[i] *= 1e-9f;
-            else if (childLowerBound < maxBound.lower)  // Downweight non-shorted mate moves
-                selectionValues[i] *= 1e-3f * (1 + maxBound.lower - childLowerBound);
-
-            // Find the best edge with the highest selection value
-            if (selectionValues[i] > bestmoveSelectionValue) {
-                bestmoveIndex          = i;
-                bestmoveSelectionValue = selectionValues[i];
-            }
-        }
-    }
+    if (maxBound.lower >= VALUE_MATE_IN_MAX_PLY)
+        bestmoveIndex = overrideBestByMateBounds(node, maxBound, edgeIndices, selectionValues);
 
     // If we have no expanded children for selection, try select by raw policy if allowed
-    if (edgeIndices.empty() && allowDirectPolicyMove) {
-        for (uint32_t edgeIndex = 0; edgeIndex < edges.numEdges; edgeIndex++) {
-            const Edge &childEdge   = edges[edgeIndex];
-            float       childPolicy = childEdge.getP();
-            if (childPolicy > bestmoveSelectionValue) {
-                bestmoveIndex          = edgeIndices.size();
-                bestmoveSelectionValue = childPolicy;
-            }
-            edgeIndices.push_back(edgeIndex);
-            selectionValues.push_back(childPolicy);
-        }
-        assert(!edgeIndices.empty());
-    }
+    if (edgeIndices.empty() && allowDirectPolicyMove)
+        bestmoveIndex = selectByRawPolicy(node, edgeIndices, selectionValues);
 
     return bestmoveIndex;
 }
@@ -809,6 +875,25 @@ void extractPVOfChildNode(const Node &node, std::vector<Pos> &pv, int maxDepth =
         curNode = bestEdge.getChild();
         if (!curNode)
             break;
+    }
+}
+
+/// Process all node-table shards cooperatively: each calling thread repeatedly
+/// grabs the next unprocessed shard index until none remain. Must be called
+/// from a task running on every thread, sharing one counter across threads.
+/// The shard's lock is held while f runs.
+void processAllShards(NodeTable                                     &nodeTable,
+                      std::atomic<size_t>                           &nextShardIndex,
+                      const std::function<void(NodeTable::Shard &)> &f)
+{
+    for (;;) {
+        size_t shardIdx = nextShardIndex.fetch_add(1, std::memory_order_relaxed);
+        if (shardIdx >= nodeTable.getNumShards())
+            return;
+
+        NodeTable::Shard shard = nodeTable.getShardByShardIndex(shardIdx);
+        std::unique_lock lock(shard.mutex);
+        f(shard);
     }
 }
 
@@ -888,15 +973,9 @@ void MCTSSearcher::clear(ThreadPool &pool, bool clearAllMemory)
         std::atomic<size_t> numShardsProcessed = 0;
         th.threads.runOnAllThreads(
             [this, &numShardsProcessed](SearchThread &t) {
-                for (;;) {
-                    size_t shardIdx = numShardsProcessed.fetch_add(1, std::memory_order_relaxed);
-                    if (shardIdx >= this->nodeTable->getNumShards())
-                        return;
-
-                    NodeTable::Shard shard = this->nodeTable->getShardByShardIndex(shardIdx);
-                    std::unique_lock lock(shard.mutex);
+                processAllShards(*this->nodeTable, numShardsProcessed, [](NodeTable::Shard &shard) {
                     shard.table.clear();
-                }
+                });
             },
             true);
     });
@@ -1075,24 +1154,21 @@ void MCTSSearcher::recycleOldNodes(SearchThread &th)
 
     th.threads.runOnAllThreads(
         [this, &numRecycledNodes, &numShardsProcessed](SearchThread &t) {
-            for (;;) {
-                size_t shardIdx = numShardsProcessed.fetch_add(1, std::memory_order_relaxed);
-                if (shardIdx >= this->nodeTable->getNumShards())
-                    return;
-
-                NodeTable::Shard shard = this->nodeTable->getShardByShardIndex(shardIdx);
-                std::unique_lock lock(shard.mutex);
-                for (auto it = shard.table.begin(); it != shard.table.end();) {
-                    Node *node = std::addressof(const_cast<Node &>(*it));
-                    if (node->getAgeRef().load(std::memory_order_relaxed)
-                        != this->graph.globalNodeAge) {
-                        it = shard.table.erase(it);
-                        numRecycledNodes.fetch_add(1, std::memory_order_relaxed);
+            processAllShards(
+                *this->nodeTable,
+                numShardsProcessed,
+                [this, &numRecycledNodes](NodeTable::Shard &shard) {
+                    for (auto it = shard.table.begin(); it != shard.table.end();) {
+                        Node *node = std::addressof(const_cast<Node &>(*it));
+                        if (node->getAgeRef().load(std::memory_order_relaxed)
+                            != this->graph.globalNodeAge) {
+                            it = shard.table.erase(it);
+                            numRecycledNodes.fetch_add(1, std::memory_order_relaxed);
+                        }
+                        else
+                            it++;
                     }
-                    else
-                        it++;
-                }
-            }
+                });
         },
         true);
 
