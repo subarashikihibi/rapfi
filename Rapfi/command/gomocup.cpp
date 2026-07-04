@@ -24,6 +24,7 @@
 #include "../database/dbutils.h"
 #include "../database/yxdbstorage.h"
 #include "../eval/eval.h"
+#include "../eval/evalconfig.h"
 #include "../eval/evaluator.h"
 #include "../game/board.h"
 #include "../search/ab/searcher.h"
@@ -409,13 +410,13 @@ void getOption()
         }
     }
     else if (token == "EVALUATOR_DRAW_BLACK_WINRATE") {
-        std::cin >> Config::EvaluatorDrawBlackWinRate;
-        Config::EvaluatorDrawBlackWinRate =
-            std::clamp(Config::EvaluatorDrawBlackWinRate, 0.0f, 1.0f);
+        std::cin >> Evaluation::EvalCfg.drawBlackWinRate;
+        Evaluation::EvalCfg.drawBlackWinRate =
+            std::clamp(Evaluation::EvalCfg.drawBlackWinRate, 0.0f, 1.0f);
     }
     else if (token == "EVALUATOR_DRAW_RATIO") {
-        std::cin >> Config::EvaluatorDrawRatio;
-        Config::EvaluatorDrawRatio = std::clamp(Config::EvaluatorDrawRatio, 0.0f, 1.0f);
+        std::cin >> Evaluation::EvalCfg.drawRatio;
+        Evaluation::EvalCfg.drawRatio = std::clamp(Evaluation::EvalCfg.drawRatio, 0.0f, 1.0f);
     }
     else if (token == "SEARCH_TYPE") {
         std::cin >> str;

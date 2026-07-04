@@ -49,11 +49,6 @@ extern const std::string InternalConfig;
 // Model configs
 // (ScalingFactor and the EVALS/EVALS_THREAT/P4SCORES tables are declared in
 // eval/scoretables.h together with their query API)
-extern float EvaluatorMarginWinLossScale;
-extern float EvaluatorMarginWinLossExponent;
-extern float EvaluatorMarginScale;
-extern float EvaluatorDrawBlackWinRate;
-extern float EvaluatorDrawRatio;
 
 // -------------------------------------------------
 // General options

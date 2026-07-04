@@ -25,6 +25,7 @@
 #include "database/dbconfig.h"
 #include "database/dbstorage.h"
 #include "database/yxdbstorage.h"
+#include "eval/evalconfig.h"
 #include "eval/evaluator.h"
 #include "eval/mix10nnue.h"
 #include "eval/mix9svqnnue.h"
@@ -78,15 +79,6 @@ Pattern4Score P4SCORES[RULE_NB + 1][PCODE_NB];
 }  // namespace Evaluation
 
 namespace Config {
-
-// -------------------------------------------------
-// Model configs
-
-float EvaluatorMarginWinLossScale    = 1.18f;
-float EvaluatorMarginWinLossExponent = 3.07f;
-float EvaluatorMarginScale           = 395.0f;
-float EvaluatorDrawBlackWinRate      = 0.5f;
-float EvaluatorDrawRatio             = 1.0f;
 
 // -------------------------------------------------
 // General options
@@ -593,16 +585,17 @@ void Config::readEvaluator(const cpptoml::table &t)
     }
 
     // Read classical/evaluator switching margin
-    EvaluatorMarginWinLossScale =
-        (float)t.get_as<double>("margin_winloss_scale").value_or(EvaluatorMarginWinLossScale);
-    EvaluatorMarginWinLossExponent =
-        (float)t.get_as<double>("margin_winloss_exp").value_or(EvaluatorMarginWinLossExponent);
-    EvaluatorMarginScale = (float)t.get_as<double>("margin_scale").value_or(EvaluatorMarginScale);
-    EvaluatorDrawBlackWinRate =
-        (float)t.get_as<double>("draw_black_winrate").value_or(EvaluatorDrawBlackWinRate);
-    EvaluatorDrawRatio        = (float)t.get_as<double>("draw_ratio").value_or(EvaluatorDrawRatio);
-    EvaluatorDrawBlackWinRate = std::clamp(EvaluatorDrawBlackWinRate, 0.0f, 1.0f);
-    EvaluatorDrawRatio        = std::clamp(EvaluatorDrawRatio, 0.0f, 1.0f);
+    auto &evalCfg               = Evaluation::EvalCfg;
+    evalCfg.marginWinLossScale  = (float)t.get_as<double>("margin_winloss_scale")
+                                     .value_or(evalCfg.marginWinLossScale);
+    evalCfg.marginWinLossExponent =
+        (float)t.get_as<double>("margin_winloss_exp").value_or(evalCfg.marginWinLossExponent);
+    evalCfg.marginScale = (float)t.get_as<double>("margin_scale").value_or(evalCfg.marginScale);
+    evalCfg.drawBlackWinRate =
+        (float)t.get_as<double>("draw_black_winrate").value_or(evalCfg.drawBlackWinRate);
+    evalCfg.drawRatio        = (float)t.get_as<double>("draw_ratio").value_or(evalCfg.drawRatio);
+    evalCfg.drawBlackWinRate = std::clamp(evalCfg.drawBlackWinRate, 0.0f, 1.0f);
+    evalCfg.drawRatio        = std::clamp(evalCfg.drawRatio, 0.0f, 1.0f);
 
     MESSAGEL("Evaluator set to " << *evaluatorType << ".");
 }

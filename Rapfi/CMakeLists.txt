@@ -178,6 +178,7 @@ set(CORE_SOURCES
     database/yxdbstorage.cpp
 
     eval/eval.cpp
+    eval/evalconfig.cpp
     eval/evaluator.cpp
     eval/mix9svqnnue.cpp
     eval/mix10nnue.cpp
@@ -246,6 +247,7 @@ set(HEADERS
     database/yxdbstorage.h
 
     eval/eval.h
+    eval/evalconfig.h
     eval/evaluator.h
     eval/mix9svqnnue.h
     eval/mix10nnue.h
