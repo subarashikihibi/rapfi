@@ -864,6 +864,175 @@ inline float positionComplexity(const Board &board, Color self, Color oppo)
     return ::logf(complexCount);
 }
 
+/// Heuristic classification of the move about to be searched, consumed by the
+/// pruning (step 12), extension (step 13) and reduction (step 15) heuristics.
+struct MoveTraits
+{
+    bool important;  // self J_FLEX2_2X+ / oppo H_FLEX3+ / renju false-forbidden
+    bool trivial;    // no pattern for either side
+    bool distract;   // far from both our own and the opponent's last moves
+    int  distSelf;   // distance to our own move two plies ago
+    int  distOppo;   // distance to the opponent's last move
+};
+
+/// Classify the move about to be searched. Requires ss->moveP4 to be set.
+template <Rule Rule>
+MoveTraits classifyMove(SearchStack *ss, Pos move, Color self, Color oppo)
+{
+    MoveTraits mt;
+    // False forbidden move in Renju is considered as important move
+    mt.important = ss->moveP4[self] >= J_FLEX2_2X || ss->moveP4[oppo] >= H_FLEX3
+                   || (Rule == Rule::RENJU && ss->moveP4[BLACK] == FORBID);
+    mt.trivial  = ss->moveP4[BLACK] == NONE && ss->moveP4[WHITE] == NONE;
+    mt.distOppo = Pos::distance(move, (ss - 1)->currentMove);
+    mt.distSelf = Pos::distance(move, (ss - 2)->currentMove);
+    mt.distract = mt.distSelf > (Rule == RENJU ? 5 : 4) && mt.distOppo > 4;
+    return mt;
+}
+
+/// Step 15 of search<Rule,NT>: compute the LMR reduction for the current move.
+/// Also updates ss->statScore. Called after the move has been made on board, so
+/// the node's move/self/oppo must be passed in rather than derived from board.
+template <Rule Rule, NodeType NT>
+Depth computeLmrReduction(Board            &board,
+                          SearchStack      *ss,
+                          const MovePicker &mp,
+                          Pos               move,
+                          Color             self,
+                          Color             oppo,
+                          Depth             depth,
+                          int               moveCount,
+                          int               improvement,
+                          Value             alpha,
+                          Value             beta,
+                          Value             bestValue,
+                          bool              cutNode,
+                          bool              oppo4,
+                          float             complexity,
+                          const MoveTraits &mt)
+{
+    constexpr bool PvNode   = NT == PV || NT == Root;
+    constexpr bool RootNode = NT == Root;
+
+    SearchThread *thisThread = board.thisThread();
+    ABSearchData *searchData = thisThread->searchDataAs<ABSearchData>();
+    ABSearcher   *searcher   = static_cast<ABSearcher *>(thisThread->threads.searcher());
+
+    Depth r = reduction<Rule, PvNode>(searcher->reductions,
+                                      depth,
+                                      moveCount,
+                                      improvement,
+                                      beta - alpha,
+                                      searchData->rootDelta);
+
+    // Policy based reduction (~59 elo)
+    if (mp.hasPolicyScore())
+        r += policyReduction<Rule>(mp.curMoveScore()
+                                   * (0.1f / Evaluation::PolicyBuffer::ScoreScale));
+
+    // Dynamic reduction based on complexity (~2 elo)
+    r += complexity * complexityReduction<Rule>(mt.trivial, mt.important, mt.distract);
+
+    // Decrease reduction if position is or has been on the PV (~10 elo)
+    if (ss->ttPv)
+        r -= TTPV_NEG_REDUCTION;
+
+    // Increase reduction for nodes that does not improve root alpha (~0 elo)
+    if (!RootNode && (ss->ply & 1) && bestValue >= -searchData->rootAlpha)
+        r += NO_ALPHA_IMPROVING_REDUCTION;
+
+    // Increase reduction for cut nodes if is not killer moves (~5 elo)
+    if (cutNode && !(!oppo4 && ss->isKiller(move) && ss->moveP4[self] < H_FLEX3))
+        r += NOKILLER_CUTNODE_REDUCTION;
+
+    // Increase reduction for useless defend move (~6 elo)
+    if (oppo4 && ss->moveP4[oppo] < E_BLOCK4) {
+        r += (mt.distOppo > 4 ? OPPO_USELESS_DEFEND_REDUCTION : 0);
+        r += (mt.distSelf > 4 ? SELF_USELESS_DEFEND_REDUCTION : 0);
+    }
+
+    // Decrease reduction for continuous attack (~5 elo)
+    if (!oppo4 && (ss - 2)->moveP4[self] >= H_FLEX3
+        && (ss->moveP4[self] >= H_FLEX3 || mt.distSelf <= 4 && ss->moveP4[self] >= J_FLEX2_2X))
+        r -= CONTINUOUS_ATTACK_EXT;
+
+    if constexpr (Rule == Rule::RENJU) {
+        // Decrease reduction for false forbidden move in Renju (~6 elo)
+        if (ss->moveP4[BLACK] == FORBID)
+            r -= FALSE_FORBID_LESS_REDUCTION;
+    }
+
+    // Update statScore of this node
+    ss->statScore = statScore(searchData->mainHistory, self, move);
+
+    // Decrease/increase reduction for moves with a good/bad history (~9 elo)
+    r -= extensionFromStatScore(ss->statScore, depth);
+
+    return r;
+}
+
+/// Root part of step 18 of search<Rule,NT>: update the RootMove entry for the
+/// searched move, counting bestmove changes and non-mated root moves.
+/// @return The (possibly balance-adjusted) value used for best-move comparison.
+Value updateRootMove(Board       &board,
+                     SearchStack *ss,
+                     Pos          move,
+                     Value        value,
+                     Value        alpha,
+                     int          moveCount,
+                     uint64_t     curNumNodes,
+                     int         &nonMatedCount)
+{
+    SearchThread  *thisThread = board.thisThread();
+    ABSearchData  *searchData = thisThread->searchDataAs<ABSearchData>();
+    SearchOptions &options    = thisThread->options();
+
+    const bool balance2  = options.balanceMode == SearchOptions::BALANCE_TWO;
+    Value      moveValue = value;
+    RootMove  &rm =
+        balance2 ? thisThread->rootMoves
+                       [thisThread->balance2Moves[Balance2Move {board.getLastMove(), move}]]
+                 : *std::find(thisThread->rootMoves.begin(), thisThread->rootMoves.end(), move);
+
+    // If we are in balance move mode, map the original move value to its negetive
+    // absolute value, which makes best move and PV selection based on how balanced
+    // a move is rather than how good a move is. Note that move value recorded in
+    // RootMove is kept unchanged for better eval output.
+    if (options.balanceMode)
+        value = balancedValue(value, options.balanceBias);
+
+    // Check for PV move or new best move.
+    rm.numNodes += thisThread->numNodes.load(std::memory_order_relaxed) - curNumNodes;
+    rm.selDepth = thisThread->selDepth;
+    if (moveCount == 1 || value > alpha) {
+        rm.value = moveValue;
+        rm.pv.resize(1 + balance2);
+
+        assert((ss + 1)->pv);
+
+        for (Pos *m = (ss + 1)->pv; *m != Pos::NONE; m++)
+            rm.pv.push_back(*m);
+
+        assert(!balance2 || rm.pv.size() >= 2);
+
+        // We record how often the best move has been changed in each iteration.
+        // When the best move changes frequently, we allocate some more time.
+        if (moveCount > 1)
+            searchData->bestMoveChanges++;
+    }
+    else {
+        // All other moves but PV are set to the lowest value: this is not a problem as
+        // the sort is stable and its rank in rootmoves is kept, just the PV is pushed up.
+        rm.value = VALUE_NONE;
+    }
+
+    // We record how many moves is not mated at root, which can indicate singular root.
+    if (value > VALUE_MATED_IN_MAX_PLY)
+        nonMatedCount++;
+
+    return value;
+}
+
 /// The main search function for both PV and non-PV nodes
 template <Rule Rule, NodeType NT>
 Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth, bool cutNode)
@@ -1147,14 +1316,7 @@ moves_loop:
         ss->moveP4[BLACK] = board.cell(move).pattern4[BLACK];
         ss->moveP4[WHITE] = board.cell(move).pattern4[WHITE];
 
-        // False forbidden move in Renju is considered as important move
-        bool importantMove = ss->moveP4[self] >= J_FLEX2_2X || ss->moveP4[oppo] >= H_FLEX3
-                             || (Rule == Rule::RENJU && ss->moveP4[BLACK] == FORBID);
-        bool trivialMove = ss->moveP4[BLACK] == NONE && ss->moveP4[WHITE] == NONE;
-
-        int  distOppo = Pos::distance(move, (ss - 1)->currentMove);
-        int  distSelf = Pos::distance(move, (ss - 2)->currentMove);
-        bool distract = distSelf > (Rule == RENJU ? 5 : 4) && distOppo > 4;
+        const MoveTraits mt = classifyMove<Rule>(ss, move, self, oppo);
 
         // Step 12. Pruning at shallow depth
         // Do pruning only when we have non-losing moves, otherwise we may have a false mate.
@@ -1165,7 +1327,7 @@ moves_loop:
                 continue;
 
             // Skip trivial moves at lower depth (~2 elo at LTC)
-            if (trivialMove && depth < TRIVIAL_PRUN_DEPTH)
+            if (mt.trivial && depth < TRIVIAL_PRUN_DEPTH)
                 continue;
 
             // Policy based pruning (~10 elo)
@@ -1173,7 +1335,7 @@ moves_loop:
                 continue;
 
             // Prun distract defence move which is likely to delay a winning (~2 elo)
-            if (oppo4 && depth < TRIVIAL_PRUN_DEPTH && ss->moveP4[oppo] < E_BLOCK4 && distract)
+            if (oppo4 && depth < TRIVIAL_PRUN_DEPTH && ss->moveP4[oppo] < E_BLOCK4 && mt.distract)
                 continue;
         }
 
@@ -1236,8 +1398,8 @@ moves_loop:
             extension = PvNode ? TTM_EXT_PV : TTM_EXT_NONPV;
 
             // Additional extension for near B4 ttmove
-            if (ss->moveP4[self] >= E_BLOCK4 && distSelf <= 6)
-                extension += (distSelf <= 4 ? NEARB4_EXT_DIST4 : NEARB4_EXT_DIST6);
+            if (ss->moveP4[self] >= E_BLOCK4 && mt.distSelf <= 6)
+                extension += (mt.distSelf <= 4 ? NEARB4_EXT_DIST4 : NEARB4_EXT_DIST6);
         }
 
         // Fail high reduction (~8 elo)
@@ -1263,55 +1425,22 @@ moves_loop:
         // Step 15. Late move reduction (LMR). Moves are searched with a reduced
         // depth and will be re-searched at full depth if fail high.
         if (depth >= 2 && moveCount > 1 + RootNode) {
-            Depth r = reduction<Rule, PvNode>(searcher->reductions,
-                                              depth,
-                                              moveCount,
-                                              improvement,
-                                              beta - alpha,
-                                              searchData->rootDelta);
-
-            // Policy based reduction (~59 elo)
-            if (mp.hasPolicyScore())
-                r += policyReduction<Rule>(mp.curMoveScore()
-                                           * (0.1f / Evaluation::PolicyBuffer::ScoreScale));
-
-            // Dynamic reduction based on complexity (~2 elo)
-            r += complexity * complexityReduction<Rule>(trivialMove, importantMove, distract);
-
-            // Decrease reduction if position is or has been on the PV (~10 elo)
-            if (ss->ttPv)
-                r -= TTPV_NEG_REDUCTION;
-
-            // Increase reduction for nodes that does not improve root alpha (~0 elo)
-            if (!RootNode && (ss->ply & 1) && bestValue >= -searchData->rootAlpha)
-                r += NO_ALPHA_IMPROVING_REDUCTION;
-
-            // Increase reduction for cut nodes if is not killer moves (~5 elo)
-            if (cutNode && !(!oppo4 && ss->isKiller(move) && ss->moveP4[self] < H_FLEX3))
-                r += NOKILLER_CUTNODE_REDUCTION;
-
-            // Increase reduction for useless defend move (~6 elo)
-            if (oppo4 && ss->moveP4[oppo] < E_BLOCK4) {
-                r += (distOppo > 4 ? OPPO_USELESS_DEFEND_REDUCTION : 0);
-                r += (distSelf > 4 ? SELF_USELESS_DEFEND_REDUCTION : 0);
-            }
-
-            // Decrease reduction for continuous attack (~5 elo)
-            if (!oppo4 && (ss - 2)->moveP4[self] >= H_FLEX3
-                && (ss->moveP4[self] >= H_FLEX3 || distSelf <= 4 && ss->moveP4[self] >= J_FLEX2_2X))
-                r -= CONTINUOUS_ATTACK_EXT;
-
-            if constexpr (Rule == Rule::RENJU) {
-                // Decrease reduction for false forbidden move in Renju (~6 elo)
-                if (ss->moveP4[BLACK] == FORBID)
-                    r -= FALSE_FORBID_LESS_REDUCTION;
-            }
-
-            // Update statScore of this node
-            ss->statScore = statScore(searchData->mainHistory, self, move);
-
-            // Decrease/increase reduction for moves with a good/bad history (~9 elo)
-            r -= extensionFromStatScore(ss->statScore, depth);
+            Depth r = computeLmrReduction<Rule, NT>(board,
+                                                    ss,
+                                                    mp,
+                                                    move,
+                                                    self,
+                                                    oppo,
+                                                    depth,
+                                                    moveCount,
+                                                    improvement,
+                                                    alpha,
+                                                    beta,
+                                                    bestValue,
+                                                    cutNode,
+                                                    oppo4,
+                                                    complexity,
+                                                    mt);
 
             // Allow LMR to do deeper search in some circumstances
             // Clamp the LMR depth to newDepth (no depth less than one)
@@ -1394,51 +1523,8 @@ moves_loop:
 
         assert(value > -VALUE_INFINITE && value < VALUE_INFINITE);
 
-        if (RootNode) {
-            const bool balance2  = options.balanceMode == SearchOptions::BALANCE_TWO;
-            Value      moveValue = value;
-            RootMove  &rm =
-                balance2
-                     ? thisThread->rootMoves
-                          [thisThread->balance2Moves[Balance2Move {board.getLastMove(), move}]]
-                     : *std::find(thisThread->rootMoves.begin(), thisThread->rootMoves.end(), move);
-
-            // If we are in balance move mode, map the original move value to its negetive
-            // absolute value, which makes best move and PV selection based on how balanced
-            // a move is rather than how good a move is. Note that move value recorded in
-            // RootMove is kept unchanged for better eval output.
-            if (options.balanceMode)
-                value = balancedValue(value, options.balanceBias);
-
-            // Check for PV move or new best move.
-            rm.numNodes += thisThread->numNodes.load(std::memory_order_relaxed) - curNumNodes;
-            rm.selDepth = thisThread->selDepth;
-            if (moveCount == 1 || value > alpha) {
-                rm.value = moveValue;
-                rm.pv.resize(1 + balance2);
-
-                assert((ss + 1)->pv);
-
-                for (Pos *m = (ss + 1)->pv; *m != Pos::NONE; m++)
-                    rm.pv.push_back(*m);
-
-                assert(!balance2 || rm.pv.size() >= 2);
-
-                // We record how often the best move has been changed in each iteration.
-                // When the best move changes frequently, we allocate some more time.
-                if (moveCount > 1)
-                    searchData->bestMoveChanges++;
-            }
-            else {
-                // All other moves but PV are set to the lowest value: this is not a problem as
-                // the sort is stable and its rank in rootmoves is kept, just the PV is pushed up.
-                rm.value = VALUE_NONE;
-            }
-
-            // We record how many moves is not mated at root, which can indicate singular root.
-            if (value > VALUE_MATED_IN_MAX_PLY)
-                nonMatedCount++;
-        }
+        if (RootNode)
+            value = updateRootMove(board, ss, move, value, alpha, moveCount, curNumNodes, nonMatedCount);
 
         // Update best value, best move and PV.
         if (value > bestValue) {
