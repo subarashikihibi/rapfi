@@ -89,7 +89,7 @@ size_t ABSearcher::getMemoryLimit() const
     return TT.hashSizeKB();
 }
 
-void ABSearcher::clear(ThreadPool &pool, bool clearAllMemory)
+void ABSearcher::clear(SearchEngine &pool, bool clearAllMemory)
 {
     // Clear time control variables for one game
     previousTimeReduction = 1.0f;
@@ -103,7 +103,7 @@ void ABSearcher::clear(ThreadPool &pool, bool clearAllMemory)
 
 const RootMove *ABSearcher::searchMain(SearchThread &th)
 {
-    SearchContext &ctx  = th.threads.ctx;
+    SearchContext &ctx  = th.engine.ctx;
     SearchOptions &opts = th.options();
 
     // Check for forced database move
@@ -140,12 +140,12 @@ const RootMove *ABSearcher::searchMain(SearchThread &th)
 
     // Starts worker threads, then starts main thread
     ctx.printer.printSearchStarts(th, ctx.timectl);
-    th.threads.runOnAllThreads([this](SearchThread &t) { search(t); }, true);
+    th.engine.runOnAllThreads([this](SearchThread &t) { search(t); }, true);
 
     // Select best thread according to eval and completed depth when needed
     SearchThread *bestThread = &th;
     if (opts.multiPV == 1 && !SkillMovePicker(opts.strengthLevel).enabled() && !opts.balanceMode)
-        bestThread = pickBestThread(th.threads);
+        bestThread = pickBestThread(th.engine);
 
     if (opts.balanceMode == SearchOptions::BALANCE_NONE && dbWinMove
         && bestThread->rootMoves[0].value < VALUE_MATE_IN_MAX_PLY) {
@@ -177,7 +177,7 @@ const RootMove *ABSearcher::searchMain(SearchThread &th)
 void ABSearcher::search(SearchThread &th)
 {
     ABSearchData     &sd        = *th.searchDataAs<ABSearchData>();
-    SearchContext    &ctx       = th.threads.ctx;
+    SearchContext    &ctx       = th.engine.ctx;
     SearchOptions    &options   = th.options();
     Value             initValue = Evaluation::evaluate(*th.board, options.rule);
     StackArray        stackArray(MAX_PLY, initValue);
@@ -186,7 +186,7 @@ void ABSearcher::search(SearchThread &th)
     int               lastMoveChangeDepth = 0;
     float             timeReduction = 1.0f, totalBestMoveChanges = 0.0f;
     int               firstMateDepth = 0, firstSingularDepth = 0;
-    SearchThread     *mainThread = (&th == th.threads.main() ? th.threads.main() : nullptr);
+    SearchThread     *mainThread = (&th == th.engine.main() ? th.engine.main() : nullptr);
 
     // Init search depth range
     int maxDepth   = std::min(options.maxDepth, std::clamp(Config::MaxSearchDepth, 2, MAX_DEPTH));
@@ -203,8 +203,8 @@ void ABSearcher::search(SearchThread &th)
     // Limit multiPV to the size of root moves
     sd.multiPv = std::min<uint32_t>(sd.multiPv, th.rootMoves.size());
 
-    for (sd.rootDepth = startDepth; sd.rootDepth <= maxDepth && !th.threads.isTerminating();
-         sd.rootDepth = pickNextDepth(th.threads, th.id, sd.rootDepth)) {
+    for (sd.rootDepth = startDepth; sd.rootDepth <= maxDepth && !th.engine.isTerminating();
+         sd.rootDepth = pickNextDepth(th.engine, th.id, sd.rootDepth)) {
         // Sync modifications in database client to database storage
         if (th.dbClient && ctx.timectl.elapsed() > 5000)
             th.dbClient->sync(false);
@@ -220,7 +220,7 @@ void ABSearcher::search(SearchThread &th)
         }
 
         // MultiPV loop. We perform a full root search for each PV line
-        for (sd.pvIdx = 0; sd.pvIdx < sd.multiPv && !th.threads.isTerminating(); ++sd.pvIdx) {
+        for (sd.pvIdx = 0; sd.pvIdx < sd.multiPv && !th.engine.isTerminating(); ++sd.pvIdx) {
             // Reset selDepth for each depth and each PV line
             th.selDepth = 0;
 
@@ -249,7 +249,7 @@ void ABSearcher::search(SearchThread &th)
         }
 
         // If search is complete, update completed depth.
-        if (!th.threads.isTerminating()) {
+        if (!th.engine.isTerminating()) {
             sd.completedDepth = sd.rootDepth;
         }
 
@@ -273,12 +273,12 @@ void ABSearcher::search(SearchThread &th)
         // Stop thinking if we are not in analysis mode, inPonder mode, or random move mode
         if (!options.isAnalysisMode() && !ctx.inPonder && !rmp.enabled()) {
             if (isMate && sd.rootDepth - firstMateDepth >= Config::NumIterationAfterMate)
-                th.threads.stopThinking();
+                th.engine.stopThinking();
             else if (sd.singularRoot
                      && sd.rootDepth - firstSingularDepth
                             >= Config::NumIterationAfterSingularRoot) {
                 ctx.markPonderingAvailable();
-                th.threads.stopThinking();
+                th.engine.stopThinking();
             }
         }
 
@@ -287,9 +287,9 @@ void ABSearcher::search(SearchThread &th)
             ctx.printer.printDepthCompletes(*mainThread, ctx.timectl, sd.completedDepth);
 
         // Check do we have time for the next iteration?
-        if (options.timeLimit && !th.threads.isTerminating()) {
+        if (options.timeLimit && !th.engine.isTerminating()) {
             // Accumulate all best move changes across threads
-            for (const auto &th : th.threads) {
+            for (const auto &th : th.engine) {
                 totalBestMoveChanges += sd.bestMoveChanges;
                 sd.bestMoveChanges = 0;
             }
@@ -300,12 +300,12 @@ void ABSearcher::search(SearchThread &th)
                                        bestValue,
                                        previousBestValue,
                                        previousTimeReduction,
-                                       totalBestMoveChanges / th.threads.size()},
+                                       totalBestMoveChanges / th.engine.size()},
                                       timeReduction)
                 && !ctx.inPonder) {
                 // Start pondering after foreground searching naturally ended
                 ctx.markPonderingAvailable();
-                th.threads.stopThinking();
+                th.engine.stopThinking();
             }
         }
     }
@@ -325,7 +325,7 @@ void ABSearcher::search(SearchThread &th)
     if (rmp.enabled()) {
         std::swap(
             th.rootMoves[0],
-            *std::find(th.rootMoves.begin(), th.rootMoves.end(), rmp.pick(th.threads, sd.multiPv)));
+            *std::find(th.rootMoves.begin(), th.rootMoves.end(), rmp.pick(th.engine, sd.multiPv)));
     }
 }
 
@@ -334,7 +334,7 @@ bool ABSearcher::checkTimeupCondition(const TimeControl &timectl)
     return timectl.elapsed() >= timectl.maximum();
 }
 
-int ABSearcher::pickNextDepth(ThreadPool &threads, uint32_t thisId, int lastDepth) const
+int ABSearcher::pickNextDepth(SearchEngine &threads, uint32_t thisId, int lastDepth) const
 {
     if (thisId == 0 || threads.size() < 3)
         return lastDepth + 1;
@@ -357,7 +357,7 @@ int ABSearcher::pickNextDepth(ThreadPool &threads, uint32_t thisId, int lastDept
     }
 }
 
-SearchThread *ABSearcher::pickBestThread(ThreadPool &threads) const
+SearchThread *ABSearcher::pickBestThread(SearchEngine &threads) const
 {
     SearchThread *bestThread = threads.main();
 
@@ -411,7 +411,7 @@ void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue,
     Value          delta, alpha, beta;
     SearchThread  *thisThread  = board.thisThread();
     ABSearchData  *searchData  = thisThread->searchDataAs<ABSearchData>();
-    SearchContext &ctx         = thisThread->threads.ctx;
+    SearchContext &ctx         = thisThread->engine.ctx;
     int            failHighCnt = 0;
 
     // Reset aspiration window starting size if aspiration windows is enabled and
@@ -452,7 +452,7 @@ void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue,
                              RootMoveValueComparator {});
 
         // If search has been stopped, break immediately. Sorting result is safe to use.
-        if (thisThread->threads.isTerminating())
+        if (thisThread->engine.isTerminating())
             break;
 
         // Update current move's sel depth
@@ -860,7 +860,7 @@ Depth computeLmrReduction(Board            &board,
 
     SearchThread *thisThread = board.thisThread();
     ABSearchData *searchData = thisThread->searchDataAs<ABSearchData>();
-    ABSearcher   *searcher   = static_cast<ABSearcher *>(thisThread->threads.searcher());
+    ABSearcher   *searcher   = static_cast<ABSearcher *>(thisThread->engine.searcher());
 
     Depth r = reduction<Rule, PvNode>(searcher->reductions,
                                       depth,
@@ -1020,7 +1020,7 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
         // Step 2. Check for aborted search and immediate draw
         // Check if we reach the time limit
         if (thisThread->isMainThread())
-            thisThread->threads.ctx.checkExit();
+            thisThread->engine.ctx.checkExit();
 
         // Check if the board has been filled or we have reached the max game ply.
         if (board.movesLeft() == 0 || board.nonPassMoveCount() >= options.maxMoves)
@@ -1189,7 +1189,7 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
 
     // When opponent is doing A_FIVE attack, search starts from here
 moves_loop:
-    SearchContext &ctx         = thisThread->threads.ctx;
+    SearchContext &ctx         = thisThread->engine.ctx;
     uint64_t       curNumNodes = 0;
     ss->dbChildWritten         = false;
 
@@ -1448,7 +1448,7 @@ moves_loop:
         // Step 18. Check for a new best move
         // Finished searching the move. If a stop occurred, the return value of the search cannot
         // be trusted, so we return immediately without updating best move, PV and TT.
-        if (thisThread->threads.isTerminating()) {
+        if (thisThread->engine.isTerminating()) {
             if (thisThread->dbClient
                 && !db.hit  // Write when no dbHit, we never overwrite any existing record with null
                 && !Config::DatabaseReadonlyMode  // Never write in database readonly mode
@@ -1621,7 +1621,7 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
     // Step 2. Check for immediate draw and winning
     // Check if we reach the time limit
     if (thisThread->isMainThread())
-        thisThread->threads.ctx.checkExit();
+        thisThread->engine.ctx.checkExit();
 
     // Check if the board has been filled or we have reached the max game ply.
     if (board.movesLeft() == 0 || board.nonPassMoveCount() >= thisThread->options().maxMoves)
@@ -1748,7 +1748,7 @@ Value vcfsearch(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
         board.undo<Rule>();
 
         // Check if a stop occurred, we discard search result by returning none value
-        if (thisThread->threads.isTerminating())
+        if (thisThread->engine.isTerminating())
             return VALUE_NONE;
 
         // Step 9. Check for a new best move
@@ -1853,7 +1853,7 @@ Value vcfdefend(Board &board, SearchStack *ss, Value alpha, Value beta, Depth de
     }
 
     assert(value > -VALUE_INFINITE && value < VALUE_INFINITE
-           || thisThread->threads.isTerminating());
+           || thisThread->engine.isTerminating());
     return value;
 }
 

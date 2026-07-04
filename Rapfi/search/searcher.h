@@ -23,7 +23,7 @@
 namespace Search {
 
 class SearchThread;  // forward declaration
-class ThreadPool;    // forward declaration
+class SearchEngine;    // forward declaration
 class TimeControl;   // forward declaration
 struct RootMove;     // forward declaration
 
@@ -60,10 +60,10 @@ public:
     virtual size_t getMemoryLimit() const = 0;
 
     /// Clear all searcher states between different games.
-    /// @param pool The thread pool that holds all the search threads.
+    /// @param engine The search engine that holds all the search threads.
     /// @param clearAllMemory Whether to clear all memory (TT, etc.)
-    /// @note All threads in pool is guaranteed to be created by this searcher.
-    virtual void clear(ThreadPool &pool, bool clearAllMemory) = 0;
+    /// @note All threads in the engine are guaranteed to be created by this searcher.
+    virtual void clear(SearchEngine &engine, bool clearAllMemory) = 0;
 
     /// Main-thread search entry point: the algorithm middle of one search
     /// session, called by the session driver after the trivial cases have been

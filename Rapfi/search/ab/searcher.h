@@ -74,7 +74,7 @@ public:
     size_t getMemoryLimit() const override;
 
     /// Clear main thread states (and TT) between different games.
-    void clear(ThreadPool &pool, bool clearAllMemory) override;
+    void clear(SearchEngine &pool, bool clearAllMemory) override;
 
     /// The algorithm middle of one search session, called by the session
     /// driver on the main search thread. Launches the worker threads and
@@ -92,10 +92,10 @@ private:
     /// Choose the next search depth by checking completed depth of all other
     /// threads and selecting the next depth with least working threads to
     /// avoid repeated searching.
-    int pickNextDepth(ThreadPool &threads, uint32_t thisId, int lastDepth) const;
+    int pickNextDepth(SearchEngine &threads, uint32_t thisId, int lastDepth) const;
 
     /// Pick thread with the best result according to eval and completed depth.
-    SearchThread *pickBestThread(ThreadPool &threads) const;
+    SearchThread *pickBestThread(SearchEngine &threads) const;
 };
 
 }  // namespace Search::AB

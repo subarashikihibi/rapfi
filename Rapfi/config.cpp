@@ -260,8 +260,8 @@ void readValueModel(const cpptoml::table &t, SetterType setter);
 /// @return Returns true if loading succeeded, otherwise returns false.
 bool Config::loadConfig(std::istream &configStream)
 {
-    Search::Threads.setupEvaluator(nullptr);
-    Search::Threads.setupDatabase(nullptr);
+    Search::Engine.setupEvaluator(nullptr);
+    Search::Engine.setupDatabase(nullptr);
 
     try {
         auto c = cpptoml::parser(configStream).parse();
@@ -398,14 +398,14 @@ void Config::readGeneral(const cpptoml::table &t)
     DefaultTTSizeKB = t.get_as<uint64_t>("default_tt_size_kb").value_or(DefaultTTSizeKB);
     // Resize TT according to default TT size (overriding previous size)
     if (DefaultTTSizeKB > 0)
-        Search::Threads.searcher()->setMemoryLimit(DefaultTTSizeKB);
+        Search::Engine.searcher()->setMemoryLimit(DefaultTTSizeKB);
 }
 
 /// Read search table of the config.
 void Config::readSearch(const cpptoml::table &t)
 {
     if (auto v = t.get_as<std::string>("default_searcher"); v)
-        Search::Threads.setupSearcher(createSearcher(*v));
+        Search::Engine.setupSearcher(createSearcher(*v));
 
     // Parameters for alpha-beta search
     AspirationWindow = t.get_as<bool>("aspiration_window").value_or(AspirationWindow);
@@ -637,7 +637,7 @@ void Config::readEvaluator(const cpptoml::table &t)
     };
 
     if (*evaluatorType == "mix9svq") {
-        Search::Threads.setupEvaluator(warpEvaluatorMaker(
+        Search::Engine.setupEvaluator(warpEvaluatorMaker(
             [=](int                   boardSize,
                 Rule                  rule,
                 Numa::NumaNodeId      numaId,
@@ -654,7 +654,7 @@ void Config::readEvaluator(const cpptoml::table &t)
             true));
     }
     else if (*evaluatorType == "mix10") {
-        Search::Threads.setupEvaluator(warpEvaluatorMaker(
+        Search::Engine.setupEvaluator(warpEvaluatorMaker(
             [=](int                   boardSize,
                 Rule                  rule,
                 Numa::NumaNodeId      numaId,
@@ -674,7 +674,7 @@ void Config::readEvaluator(const cpptoml::table &t)
     else if (*evaluatorType == "ort") {
         std::string deviceName = t.get_as<std::string>("ort_device").value_or("");
 
-        Search::Threads.setupEvaluator(warpEvaluatorMaker(
+        Search::Engine.setupEvaluator(warpEvaluatorMaker(
             [=](int                   boardSize,
                 Rule                  rule,
                 Numa::NumaNodeId      numaId,
@@ -831,7 +831,7 @@ void Config::readDatabase(const cpptoml::table &t)
     }
 
     if (DatabaseDefaultEnabled)
-        Search::Threads.setupDatabase(createDefaultDBStorage());
+        Search::Engine.setupDatabase(createDefaultDBStorage());
 }
 
 /// Read a value model from a model table.

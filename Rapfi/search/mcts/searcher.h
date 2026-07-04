@@ -41,7 +41,7 @@ public:
     /// Cross-search graph-reuse state. The node table is transposition-aware,
     /// so this is a Monte-Carlo search *graph*, not a tree.
     /// Lifecycle (preserved semantics): clear() nulls root only; globalNodeAge
-    /// resets only with clearAllMemory; previousPosition is never reset — a
+    /// resets only with clearAllMemory; previousPosition is never reset - a
     /// stale one can skip recycleOldNodes on the first search of a new game
     /// (documented quirk, queued as a behavior-change candidate).
     struct GraphState
@@ -77,7 +77,7 @@ public:
     size_t getMemoryLimit() const override;
 
     /// Clear the state of the searcher between two different games
-    void clear(ThreadPool &pool, bool clearAllMemory) override;
+    void clear(SearchEngine &pool, bool clearAllMemory) override;
 
     /// The algorithm middle of one search session, called by the session
     /// driver on the main search thread. Launches the worker threads and

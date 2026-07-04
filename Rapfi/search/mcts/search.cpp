@@ -502,7 +502,7 @@ uint32_t searchNode(Node &node, Board &board, int ply, uint32_t newVisits)
 
     SearchThread  *thisThread = board.thisThread();
     SearchOptions &options    = thisThread->options();
-    MCTSSearcher  &searcher   = static_cast<MCTSSearcher &>(*thisThread->threads.searcher());
+    MCTSSearcher  &searcher   = static_cast<MCTSSearcher &>(*thisThread->engine.searcher());
 
     // Discard visits in this node if it is unevaluated
     uint32_t parentVisits = node.getVisits();
@@ -958,7 +958,7 @@ size_t MCTSSearcher::getMemoryLimit() const
     return TT.hashSizeKB();
 }
 
-void MCTSSearcher::clear(ThreadPool &pool, bool clearAllMemory)
+void MCTSSearcher::clear(SearchEngine &pool, bool clearAllMemory)
 {
     // Note: previousPosition is deliberately NOT reset here (preserved
     // semantics; see GraphState's lifecycle comment).
@@ -971,7 +971,7 @@ void MCTSSearcher::clear(ThreadPool &pool, bool clearAllMemory)
     // Clear the node table using all threads, and wait for finish
     pool.main()->runTask([this](SearchThread &th) {
         std::atomic<size_t> numShardsProcessed = 0;
-        th.threads.runOnAllThreads(
+        th.engine.runOnAllThreads(
             [this, &numShardsProcessed](SearchThread &t) {
                 processAllShards(*this->nodeTable, numShardsProcessed, [](NodeTable::Shard &shard) {
                     shard.table.clear();
@@ -988,7 +988,7 @@ void MCTSSearcher::clear(ThreadPool &pool, bool clearAllMemory)
 
 const RootMove *MCTSSearcher::searchMain(SearchThread &th)
 {
-    SearchContext &ctx   = th.threads.ctx;
+    SearchContext &ctx   = th.engine.ctx;
     Board         &board = *th.board;
 
     // Evaluator must be enabled for MCTS search
@@ -1011,7 +1011,7 @@ const RootMove *MCTSSearcher::searchMain(SearchThread &th)
     // Starts worker threads, then starts main thread
     ctx.printer.printSearchStarts(th, ctx.timectl);
     setupRootNode(th);  // Setup root node and other stuffs
-    th.threads.runOnAllThreads([this](SearchThread &t) { search(t); }, true);
+    th.engine.runOnAllThreads([this](SearchThread &t) { search(t); }, true);
 
     // Rank root moves and record best move
     updateRootMovesData(th);
@@ -1028,12 +1028,12 @@ void MCTSSearcher::search(SearchThread &th)
 
     // Main search loop
     std::vector<Node *> selectedPath;
-    while (!th.threads.isTerminating()) {
+    while (!th.engine.isTerminating()) {
         uint32_t newNumPlayouts = Config::MaxNumVisitsPerPlayout;
 
         // Cap new number of playouts to the maximum num nodes to visit
         if (options.maxNodes) {
-            uint64_t nodesSearched = th.threads.nodesSearched();
+            uint64_t nodesSearched = th.engine.nodesSearched();
             if (nodesSearched >= options.maxNodes)
                 break;
 
@@ -1046,11 +1046,11 @@ void MCTSSearcher::search(SearchThread &th)
         th.numNodes.fetch_add(newNumNodes, std::memory_order_relaxed);
 
         if (th.isMainThread()) {
-            th.threads.ctx.checkExit(std::max(newNumNodes, 64u));
+            th.engine.ctx.checkExit(std::max(newNumNodes, 64u));
 
             bool printRootMoves = false;
             if (Config::NodesToPrintMCTSRootmoves > 0) {
-                uint64_t currentNumNodes = th.threads.nodesSearched();
+                uint64_t currentNumNodes = th.engine.nodesSearched();
                 uint64_t numElapsedNodes = currentNumNodes - scratch.lastOutputNodes;
 
                 if (numElapsedNodes >= Config::NodesToPrintMCTSRootmoves) {
@@ -1069,14 +1069,14 @@ void MCTSSearcher::search(SearchThread &th)
 
             if (printRootMoves) {
                 updateRootMovesData(th);
-                th.threads.ctx.printer.printRootMoves(th,
-                                                      th.threads.ctx.timectl,
+                th.engine.ctx.printer.printRootMoves(th,
+                                                      th.engine.ctx.timectl,
                                                       scratch.numSelectableRootMoves);
             }
 
             if (th.rootMoves.size() == 1
-                && th.threads.nodesSearched() >= Config::NumNodesAfterSingularRoot)
-                th.threads.stopThinking();
+                && th.engine.nodesSearched() >= Config::NumNodesAfterSingularRoot)
+                th.engine.stopThinking();
         }
     }
 }
@@ -1094,7 +1094,7 @@ void MCTSSearcher::setupRootNode(SearchThread &th)
 {
     // Clear the searcher if we have not initialized yet
     if (!nodeTable)
-        clear(th.threads, true);
+        clear(th.engine, true);
 
     // Get the current root position
     std::vector<Pos> rootPosition;
@@ -1139,7 +1139,7 @@ void MCTSSearcher::recycleOldNodes(SearchThread &th)
     };
 
     // Mark all reachable nodes from the root node
-    th.threads.runOnAllThreads(
+    th.engine.runOnAllThreads(
         [this, &f](SearchThread &t) {
             PRNG prng(Hash::LCHash(t.id));
             recursiveApply(*this->graph.root,
@@ -1152,7 +1152,7 @@ void MCTSSearcher::recycleOldNodes(SearchThread &th)
     // Remove all unreachable nodes
     std::atomic<size_t> numShardsProcessed = 0;
 
-    th.threads.runOnAllThreads(
+    th.engine.runOnAllThreads(
         [this, &numRecycledNodes, &numShardsProcessed](SearchThread &t) {
             processAllShards(
                 *this->nodeTable,
