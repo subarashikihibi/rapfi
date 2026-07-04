@@ -437,11 +437,96 @@ void ThreadPool::startThinking(const Board          &board,
         false);
 
     // Start the main search thread
-    main()->runTask([this, searcher = searcher(), onStop = std::move(onStop)](SearchThread &th) {
-        searcher->searchMain(th);
+    main()->runTask([this, onStop = std::move(onStop)](SearchThread &th) {
+        runSearch(th);
         if (onStop)  // If onStop is set, queue a tail task to call it
             main()->runTask([onStop = std::move(onStop)](SearchThread &th) { onStop(); });
     });
+}
+
+bool ThreadPool::tryTrivialBestmove(SearchThread &main)
+{
+    SearchOptions &opts = ctx.options;
+
+    // Probe opening database and find if there is a prepared opening
+    if (!opts.disableOpeningQuery
+        && Opening::probeOpening(*main.board, opts.rule, ctx.resultAction, ctx.bestMove)) {
+        ctx.markPonderingAvailable();
+        return true;
+    }
+
+    // Check for immediate move
+    if (main.rootMoves.empty()) {
+        // If there is no stones on board, it is possible that the opponent played a pass
+        // move at the start of one game. We just choose the center location to play.
+        if (main.board->nonPassMoveCount() == 0) {
+            ctx.bestMove = main.board->centerPos();
+            return true;
+        }
+
+        // Return the first empty position if we might find a forced forbidden
+        // point mate in Renju, or all legal points have been blocked.
+        FOR_EVERY_EMPTY_POS(main.board, pos)
+        {
+            ctx.bestMove = pos;
+            ctx.printer.printBestmoveWithoutSearch(main, pos, mated_in(0), 0, nullptr);
+            return true;
+        }
+
+        return true;  // abnormal case: GUI might have a bug
+    }
+    // If we are winning, return directly
+    else if (main.board->p4Count(main.board->sideToMove(), A_FIVE)) {
+        assert(main.board->cell(main.rootMoves[0].pv[0]).pattern4[main.board->sideToMove()]
+               == A_FIVE);
+        main.rootMoves[0].value = mate_in(1);
+        ctx.bestMove            = main.rootMoves[0].pv[0];
+
+        if (searcher()->printsTrivialBestmove)
+            ctx.printer.printBestmoveWithoutSearch(main,
+                                                   main.rootMoves[0].pv[0],
+                                                   main.rootMoves[0].value,
+                                                   1,
+                                                   &main.rootMoves[0].pv);
+        return true;
+    }
+
+    return false;
+}
+
+void ThreadPool::finalizeResult(SearchThread &main, const RootMove &finalMove)
+{
+    // Do not record bestmove in pondering
+    if (ctx.inPonder.load(std::memory_order_relaxed))
+        return;
+
+    // Record best move
+    ctx.bestMove = finalMove.pv[0];
+
+    // If swap check is needed, make swap decision according to the rule
+    if (ctx.options.swapable)
+        ctx.resultAction = Opening::decideAction(*main.board, ctx.options.rule, finalMove.value);
+    else if (ctx.options.balanceMode == SearchOptions::BalanceMode::BALANCE_TWO)
+        ctx.resultAction = ActionType::Move2;
+    else
+        ctx.resultAction = ActionType::Move;
+}
+
+void ThreadPool::runSearch(SearchThread &main)
+{
+    // Handle trivial cases that need no real search
+    if (tryTrivialBestmove(main))
+        return;
+
+    // Init time management of this search
+    ctx.timectl.init(ctx.options.turnTime,
+                     ctx.options.matchTime,
+                     ctx.options.timeLeft,
+                     {main.board->ply(), main.board->movesLeft()});
+
+    // Run the algorithm's main search routine and finalize its result
+    if (const RootMove *finalMove = searcher()->searchMain(main))
+        finalizeResult(main, *finalMove);
 }
 
 void ThreadPool::clear(bool clearAllMemory)

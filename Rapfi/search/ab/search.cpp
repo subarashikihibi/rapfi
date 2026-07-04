@@ -101,51 +101,10 @@ void ABSearcher::clear(ThreadPool &pool, bool clearAllMemory)
         TT.clear();
 }
 
-void ABSearcher::searchMain(SearchThread &th)
+const RootMove *ABSearcher::searchMain(SearchThread &th)
 {
     SearchContext &ctx  = th.threads.ctx;
     SearchOptions &opts = th.options();
-
-    // Probe opening database and find if there is a prepared opening
-    if (!opts.disableOpeningQuery
-        && Opening::probeOpening(*th.board, opts.rule, ctx.resultAction, ctx.bestMove)) {
-        ctx.markPonderingAvailable();
-        return;
-    }
-
-    // Check for immediate move
-    if (th.rootMoves.empty()) {
-        // If there is no stones on board, it is possible that the opponent played a pass
-        // move at the start of one game. We just choose the center location to play.
-        if (th.board->nonPassMoveCount() == 0) {
-            ctx.bestMove = th.board->centerPos();
-            return;
-        }
-
-        // Return the first empty position if we might find a forced forbidden
-        // point mate in Renju, or all legal points have been blocked.
-        FOR_EVERY_EMPTY_POS(th.board, pos)
-        {
-            ctx.bestMove = pos;
-            ctx.printer.printBestmoveWithoutSearch(th, pos, mated_in(0), 0, nullptr);
-            return;
-        }
-
-        return;  // abnormal case: GUI might have a bug
-    }
-    // If we are winning, return directly
-    else if (th.board->p4Count(th.board->sideToMove(), A_FIVE)) {
-        assert(th.board->cell(th.rootMoves[0].pv[0]).pattern4[th.board->sideToMove()] == A_FIVE);
-        th.rootMoves[0].value = mate_in(1);
-        ctx.bestMove          = th.rootMoves[0].pv[0];
-
-        ctx.printer.printBestmoveWithoutSearch(th,
-                                               th.rootMoves[0].pv[0],
-                                               th.rootMoves[0].value,
-                                               1,
-                                               &th.rootMoves[0].pv);
-        return;
-    }
 
     // Check for forced database move
     Pos   dbWinMove  = Pos::NONE;
@@ -172,15 +131,11 @@ void ABSearcher::searchMain(SearchThread &th)
         if (bestMove) {
             ctx.bestMove = bestMove;
             ctx.printer.printBestmoveWithoutSearch(th, bestMove, bestMoveValue, 0, nullptr);
-            return;
+            return nullptr;
         }
     }
 
-    // Init time management and transposition table
-    ctx.timectl.init(opts.turnTime,
-                     opts.matchTime,
-                     opts.timeLeft,
-                     {th.board->ply(), th.board->movesLeft()});
+    // Init transposition table generation
     TT.incGeneration();
 
     // Starts worker threads, then starts main thread
@@ -206,7 +161,7 @@ void ABSearcher::searchMain(SearchThread &th)
         else {
             ctx.bestMove = dbWinMove;
             ctx.printer.printBestmoveWithoutSearch(th, dbWinMove, dbWinValue, dbWinDepth, nullptr);
-            return;
+            return nullptr;
         }
     }
 
@@ -216,21 +171,7 @@ void ABSearcher::searchMain(SearchThread &th)
                                 bestThread->searchDataAs<ABSearchData>()->completedDepth,
                                 *bestThread);
 
-    // Do not record bestmove in pondering
-    if (ctx.inPonder)
-        return;
-
-    // Record best move
-    ctx.bestMove = bestThread->rootMoves[0].pv[0];
-
-    // If swap check is needed, make swap decision according to the rule
-    if (opts.swapable)
-        ctx.resultAction =
-            Opening::decideAction(*th.board, opts.rule, bestThread->rootMoves[0].value);
-    else if (opts.balanceMode == SearchOptions::BalanceMode::BALANCE_TWO)
-        ctx.resultAction = ActionType::Move2;
-    else
-        ctx.resultAction = ActionType::Move;
+    return &bestThread->rootMoves[0];
 }
 
 void ABSearcher::search(SearchThread &th)

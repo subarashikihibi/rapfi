@@ -187,6 +187,17 @@ public:
 private:
     friend class SearchThread;
 
+    /// Run one search session on the main search thread: handle trivial cases
+    /// needing no real search, start the session clock, run the searcher's
+    /// main routine, and finalize the result.
+    void runSearch(SearchThread &main);
+    /// Handle searches that need no real search (opening book hit, empty root
+    /// move list, immediate win). @return True if a result was produced.
+    bool tryTrivialBestmove(SearchThread &main);
+    /// Common result finalization: record best move and decide the result
+    /// action (skipped entirely while pondering).
+    void finalizeResult(SearchThread &main, const RootMove &finalMove);
+
     std::atomic_bool                     terminate;
     std::function<EvaluatorMaker>        evaluatorMaker;
     std::unique_ptr<Searcher>            searcherPtr;

@@ -856,7 +856,7 @@ void recursiveApply(Node &node, std::function<void(Node &)> *f, PRNG *prng, uint
 
 }  // namespace
 
-MCTSSearcher::MCTSSearcher()
+MCTSSearcher::MCTSSearcher() : Searcher(false)
 {
     root          = nullptr;
     nodeTable     = std::make_unique<NodeTable>(Config::NumNodeTableShardsPowerOfTwo);
@@ -905,46 +905,10 @@ void MCTSSearcher::clear(ThreadPool &pool, bool clearAllMemory)
         nodeTable = std::make_unique<NodeTable>(Config::NumNodeTableShardsPowerOfTwo);
 }
 
-void MCTSSearcher::searchMain(SearchThread &th)
+const RootMove *MCTSSearcher::searchMain(SearchThread &th)
 {
     SearchContext &ctx   = th.threads.ctx;
-    SearchOptions &opts  = th.options();
     Board         &board = *th.board;
-
-    // Probe opening database and find if there is a prepared opening
-    if (!opts.disableOpeningQuery
-        && Opening::probeOpening(board, opts.rule, ctx.resultAction, ctx.bestMove)) {
-        ctx.markPonderingAvailable();
-        return;
-    }
-
-    // Check for immediate move
-    if (th.rootMoves.empty()) {
-        // If there is no stones on board, it is possible that the opponent played a pass
-        // move at the start of one game. We just choose the center location to play.
-        if (th.board->nonPassMoveCount() == 0) {
-            ctx.bestMove = th.board->centerPos();
-            return;
-        }
-
-        // Return the first empty position if we might find a forced forbidden
-        // point mate in Renju, or all legal points have been blocked.
-        FOR_EVERY_EMPTY_POS(th.board, pos)
-        {
-            ctx.bestMove = pos;
-            ctx.printer.printBestmoveWithoutSearch(th, pos, mated_in(0), 0, nullptr);
-            return;
-        }
-
-        return;  // abnormal case: GUI might have a bug
-    }
-    // If we are winning, return directly
-    else if (th.board->p4Count(th.board->sideToMove(), A_FIVE)) {
-        assert(th.board->cell(th.rootMoves[0].pv[0]).pattern4[th.board->sideToMove()] == A_FIVE);
-        th.rootMoves[0].value = mate_in(1);
-        ctx.bestMove          = th.rootMoves[0].pv[0];
-        return;
-    }
 
     // Evaluator must be enabled for MCTS search
     if (!board.evaluator()) {
@@ -954,12 +918,9 @@ void MCTSSearcher::searchMain(SearchThread &th)
             ctx.resultAction = ActionType::Move;
             ERRORL("Evaluator is not enabled, cannot use mcts search.");
             ctx.printer.printBestmoveWithoutSearch(th, pos, mated_in(0), 0, nullptr);
-            return;
+            return nullptr;
         }
     }
-
-    // Init time management and transposition table
-    ctx.timectl.init(opts.turnTime, opts.matchTime, opts.timeLeft, {board.ply(), board.movesLeft()});
 
     // Starts worker threads, then starts main thread
     ctx.printer.printSearchStarts(th, ctx.timectl);
@@ -970,18 +931,7 @@ void MCTSSearcher::searchMain(SearchThread &th)
     updateRootMovesData(th);
     ctx.printer.printRootMoves(th, ctx.timectl, numSelectableRootMoves);
 
-    // Do not record bestmove in pondering
-    if (ctx.inPonder)
-        return;
-    ctx.bestMove = th.rootMoves[0].pv[0];
-
-    // If swap check is needed, make swap decision according to the rule
-    if (opts.swapable)
-        ctx.resultAction = Opening::decideAction(*th.board, opts.rule, th.rootMoves[0].value);
-    else if (opts.balanceMode == SearchOptions::BalanceMode::BALANCE_TWO)
-        ctx.resultAction = ActionType::Move2;
-    else
-        ctx.resultAction = ActionType::Move;
+    return &th.rootMoves[0];
 }
 
 void MCTSSearcher::search(SearchThread &th)

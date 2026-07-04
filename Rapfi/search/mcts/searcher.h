@@ -63,9 +63,10 @@ public:
     /// Clear the state of the searcher between two different games
     void clear(ThreadPool &pool, bool clearAllMemory) override;
 
-    /// The thinking entry point. When program receives search command, main
-    /// thread is started first and other threads are launched by main thread.
-    void searchMain(SearchThread &th) override;
+    /// The algorithm middle of one search session, called by the session
+    /// driver on the main search thread. Launches the worker threads and
+    /// returns the top-ranked root move (or nullptr on early-outs).
+    const RootMove *searchMain(SearchThread &th) override;
 
     /// The main best first search loop. It calls search() repeatedly until the stop
     /// condition is reached. Results are updated to thread bounded with the board.

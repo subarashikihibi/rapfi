@@ -60,6 +60,7 @@ public:
     /// Lookup tables used for reduction/purning, where index is depth or moveCount.
     std::array<Depth, MAX_MOVES + 1> reductions[RULE_NB];
 
+    ABSearcher() : Searcher(true) {}
     ~ABSearcher() = default;
     std::unique_ptr<SearchData> makeSearchData(SearchThread &th) override
     {
@@ -75,9 +76,10 @@ public:
     /// Clear main thread states (and TT) between different games.
     void clear(ThreadPool &pool, bool clearAllMemory) override;
 
-    /// The thinking entry point. When program receives search command, main
-    /// thread is started first and other threads are launched by main thread.
-    void searchMain(SearchThread &th) override;
+    /// The algorithm middle of one search session, called by the session
+    /// driver on the main search thread. Launches the worker threads and
+    /// returns the best thread's first root move (or nullptr on early-outs).
+    const RootMove *searchMain(SearchThread &th) override;
 
     /// The main iterative deeping search loop. It calls search() repeatedly with increasing depth
     /// until the stop condition is reached. Results are updated to thread bounded with the board.
