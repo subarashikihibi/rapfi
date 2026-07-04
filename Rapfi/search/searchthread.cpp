@@ -36,7 +36,7 @@ namespace {
 /// Generate the root move list for the main thread from the current board
 /// position and options: applies block-move filtering, balance2 move pair
 /// expansion, and root symmetry filtering.
-void generateRootMoves(MainSearchThread &th)
+void generateRootMoves(SearchThread &th)
 {
     auto addMoveToRootMoves = [&th](Pos m) {
         // Ignore blocked moves
@@ -344,8 +344,8 @@ void ThreadPool::setNumThreads(size_t numThreads)
     if (numThreads > 0) {
         bool bindGroup = numThreads > Numa::BindGroupThreshold;
 
-        // Make sure the first thread created is MainSearchThread
-        push_back(std::make_unique<MainSearchThread>(*this));
+        // The first thread created is the main search thread (id == 0)
+        push_back(std::make_unique<SearchThread>(*this, 0u));
 
 #ifdef MULTI_THREADING
         while (size() < numThreads) {
@@ -438,7 +438,7 @@ void ThreadPool::startThinking(const Board          &board,
 
     // Start the main search thread
     main()->runTask([this, searcher = searcher(), onStop = std::move(onStop)](SearchThread &th) {
-        searcher->searchMain(static_cast<MainSearchThread &>(th));
+        searcher->searchMain(th);
         if (onStop)  // If onStop is set, queue a tail task to call it
             main()->runTask([onStop = std::move(onStop)](SearchThread &th) { onStop(); });
     });

@@ -69,7 +69,7 @@ public:
 
     /// The thinking entry point. When program receives search command, main
     /// thread is started first and other threads are launched by main thread.
-    void searchMain(MainSearchThread &th) override;
+    void searchMain(SearchThread &th) override;
 
     /// The main best first search loop. It calls search() repeatedly until the stop
     /// condition is reached. Results are updated to thread bounded with the board.
@@ -80,13 +80,13 @@ public:
 
 private:
     /// Setup root node for the search
-    void setupRootNode(MainSearchThread &th);
+    void setupRootNode(SearchThread &th);
 
     /// Garbage collect all old nodes in the node table
-    void recycleOldNodes(MainSearchThread &th);
+    void recycleOldNodes(SearchThread &th);
 
     /// Rank the root moves and update PV, then print all root moves
-    void updateRootMovesData(MainSearchThread &th);
+    void updateRootMovesData(SearchThread &th);
 };
 
 }  // namespace Search::MCTS

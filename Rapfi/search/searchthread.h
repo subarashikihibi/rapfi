@@ -91,7 +91,6 @@ private:
 class SearchThread
 {
 private:
-    friend class MainSearchThread;
     friend class ThreadPool;
     Numa::NumaNodeId numaId;
     bool             running, exit;
@@ -166,16 +165,10 @@ public:
     int selDepth;
 };
 
-/// MainSearchThread class is the master thread in the Lazy SMP algorithm.
-/// It also controls state needed in iterative deepening and time control.
-class MainSearchThread : public SearchThread
-{
-public:
-    MainSearchThread(ThreadPool &threadPool) : SearchThread::SearchThread(threadPool, 0) {}
-};
-
 /// ThreadPool class is the container for all search threads. The first
-/// thread in the threadpool is assumed to be the main thread. ThreadPool
+/// thread in the threadpool is assumed to be the main thread (id == 0) —
+/// "main" is a role, not a type: it drives searchMain and owns time control
+/// duties, while workers only run the search loop. ThreadPool
 /// also controls thread-related stuffs such as init, launching, stop and
 /// collect various accumalated statistics.
 class ThreadPool : public std::vector<std::unique_ptr<SearchThread>>
@@ -188,7 +181,6 @@ public:
 
 private:
     friend class SearchThread;
-    friend class MainSearchThread;
 
     std::atomic_bool                     terminate;
     std::function<EvaluatorMaker>        evaluatorMaker;
@@ -248,7 +240,7 @@ public:
     /// Clear all threads state, searcher state and thread pool state for a new game.
     void clear(bool clearAllMemory);
 
-    MainSearchThread    *main() const { return static_cast<MainSearchThread *>(front().get()); }
+    SearchThread        *main() const { return front().get(); }
     Searcher            *searcher() const { return searcherPtr.get(); }
     Database::DBStorage *dbStorage() const { return dbStoragePtr.get(); }
     bool                 isTerminating() const { return terminate.load(std::memory_order_relaxed); }

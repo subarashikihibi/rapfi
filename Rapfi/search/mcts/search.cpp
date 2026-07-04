@@ -905,7 +905,7 @@ void MCTSSearcher::clear(ThreadPool &pool, bool clearAllMemory)
         nodeTable = std::make_unique<NodeTable>(Config::NumNodeTableShardsPowerOfTwo);
 }
 
-void MCTSSearcher::searchMain(MainSearchThread &th)
+void MCTSSearcher::searchMain(SearchThread &th)
 {
     SearchContext &ctx   = th.threads.ctx;
     SearchOptions &opts  = th.options();
@@ -1010,7 +1010,6 @@ void MCTSSearcher::search(SearchThread &th)
         th.numNodes.fetch_add(newNumNodes, std::memory_order_relaxed);
 
         if (th.isMainThread()) {
-            MainSearchThread &mainThread = static_cast<MainSearchThread &>(th);
             th.threads.ctx.checkExit(std::max(newNumNodes, 64u));
 
             bool printRootMoves = false;
@@ -1033,8 +1032,8 @@ void MCTSSearcher::search(SearchThread &th)
             }
 
             if (printRootMoves) {
-                updateRootMovesData(mainThread);
-                printer.printRootMoves(mainThread, timectl, numSelectableRootMoves);
+                updateRootMovesData(th);
+                printer.printRootMoves(th, timectl, numSelectableRootMoves);
             }
 
             if (th.rootMoves.size() == 1
@@ -1053,7 +1052,7 @@ bool MCTSSearcher::checkTimeupCondition()
     return false;
 }
 
-void MCTSSearcher::setupRootNode(MainSearchThread &th)
+void MCTSSearcher::setupRootNode(SearchThread &th)
 {
     // Clear the searcher if we have not initialized yet
     if (!nodeTable)
@@ -1094,7 +1093,7 @@ void MCTSSearcher::setupRootNode(MainSearchThread &th)
     previousPosition = std::move(rootPosition);
 }
 
-void MCTSSearcher::recycleOldNodes(MainSearchThread &th)
+void MCTSSearcher::recycleOldNodes(SearchThread &th)
 {
     // Increment global node age
     globalNodeAge += 1;
@@ -1144,7 +1143,7 @@ void MCTSSearcher::recycleOldNodes(MainSearchThread &th)
                                  << ", Root visit: " << root->getVisits());
 }
 
-void MCTSSearcher::updateRootMovesData(MainSearchThread &th)
+void MCTSSearcher::updateRootMovesData(SearchThread &th)
 {
     assert(root != nullptr);
     assert(!root->isLeaf());

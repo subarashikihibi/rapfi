@@ -22,9 +22,8 @@
 
 namespace Search {
 
-class SearchThread;       // forward declaration
-class MainSearchThread;  // forward declaration
-class ThreadPool;         // forward declaration
+class SearchThread;  // forward declaration
+class ThreadPool;    // forward declaration
 
 struct SearchData
 {
@@ -58,7 +57,7 @@ public:
 
     /// Main-thread search entry point. After threadpool have finished preparation,
     /// this function is called. It is responsible for starting all other threads.
-    virtual void searchMain(MainSearchThread &th) = 0;
+    virtual void searchMain(SearchThread &th) = 0;
     /// Worker-thread search entry point. This function is called by each worker thread.
     virtual void search(SearchThread &th) = 0;
 

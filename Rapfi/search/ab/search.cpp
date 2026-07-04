@@ -101,7 +101,7 @@ void ABSearcher::clear(ThreadPool &pool, bool clearAllMemory)
         TT.clear();
 }
 
-void ABSearcher::searchMain(MainSearchThread &th)
+void ABSearcher::searchMain(SearchThread &th)
 {
     SearchContext &ctx  = th.threads.ctx;
     SearchOptions &opts = th.options();
@@ -244,7 +244,7 @@ void ABSearcher::search(SearchThread &th)
     int               lastMoveChangeDepth = 0;
     float             timeReduction = 1.0f, totalBestMoveChanges = 0.0f;
     int               firstMateDepth = 0, firstSingularDepth = 0;
-    MainSearchThread *mainThread = (&th == th.threads.main() ? th.threads.main() : nullptr);
+    SearchThread     *mainThread = (&th == th.threads.main() ? th.threads.main() : nullptr);
 
     // Init search depth range
     int maxDepth   = std::min(options.maxDepth, std::clamp(Config::MaxSearchDepth, 2, MAX_DEPTH));
@@ -517,7 +517,7 @@ void aspirationSearch(Rule rule, Board &board, SearchStack *ss, Value prevValue,
 
         // Print value out of window result
         if (value <= alpha || value >= beta)
-            searcher->printer.printOutOfWindowResult(*static_cast<MainSearchThread *>(thisThread),
+            searcher->printer.printOutOfWindowResult(*thisThread,
                                                      searcher->timectl,
                                                      searchData->rootDepth,
                                                      searchData->pvIdx,
@@ -1306,7 +1306,7 @@ moves_loop:
         }
 
         if (RootNode && thisThread->isMainThread())
-            searcher->printer.printEnteringMove(*static_cast<MainSearchThread *>(thisThread),
+            searcher->printer.printEnteringMove(*thisThread,
                                                 timectl,
                                                 searchData->pvIdx,
                                                 searchData->rootDepth,
@@ -1497,7 +1497,7 @@ moves_loop:
         board.undo<Rule>();
 
         if (RootNode && thisThread->isMainThread())
-            searcher->printer.printLeavingMove(*static_cast<MainSearchThread *>(thisThread),
+            searcher->printer.printLeavingMove(*thisThread,
                                                timectl,
                                                searchData->pvIdx,
                                                searchData->rootDepth,
@@ -1568,7 +1568,7 @@ moves_loop:
         }
 
         if (RootNode && thisThread->isMainThread())
-            searcher->printer.printMoveResult(*static_cast<MainSearchThread *>(thisThread),
+            searcher->printer.printMoveResult(*thisThread,
                                               timectl,
                                               searchData->pvIdx,
                                               searchData->multiPv,

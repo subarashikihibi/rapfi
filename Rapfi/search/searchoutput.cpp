@@ -31,7 +31,7 @@
 
 namespace Search {
 
-void SearchPrinter::printSearchStarts(MainSearchThread &th, const TimeControl &tc)
+void SearchPrinter::printSearchStarts(SearchThread &th, const TimeControl &tc)
 {
     if (Config::MessageMode == MsgMode::NORMAL) {
         if (th.options().timeLimit && !th.threads.ctx.inPonder) {
@@ -41,7 +41,7 @@ void SearchPrinter::printSearchStarts(MainSearchThread &th, const TimeControl &t
     }
 }
 
-void SearchPrinter::printEnteringMove(MainSearchThread  &th,
+void SearchPrinter::printEnteringMove(SearchThread      &th,
                                       const TimeControl &tc,
                                       int                pvIdx,
                                       int                rootDepth,
@@ -52,7 +52,7 @@ void SearchPrinter::printEnteringMove(MainSearchThread  &th,
         REALTIME("POS", move, th.board->size());
 }
 
-void SearchPrinter::printLeavingMove(MainSearchThread  &th,
+void SearchPrinter::printLeavingMove(SearchThread      &th,
                                      const TimeControl &tc,
                                      int                pvIdx,
                                      int                rootDepth,
@@ -63,7 +63,7 @@ void SearchPrinter::printLeavingMove(MainSearchThread  &th,
         REALTIME("DONE", move, th.board->size());
 }
 
-void SearchPrinter::printMoveResult(MainSearchThread  &th,
+void SearchPrinter::printMoveResult(SearchThread      &th,
                                     const TimeControl &tc,
                                     int                pvIdx,
                                     int                numPv,
@@ -81,7 +81,7 @@ void SearchPrinter::printMoveResult(MainSearchThread  &th,
     }
 }
 
-void SearchPrinter::printOutOfWindowResult(MainSearchThread  &th,
+void SearchPrinter::printOutOfWindowResult(SearchThread      &th,
                                            const TimeControl &tc,
                                            int                rootDepth,
                                            int                pvIdx,
@@ -92,7 +92,7 @@ void SearchPrinter::printOutOfWindowResult(MainSearchThread  &th,
     return;
 }
 
-void SearchPrinter::printPvCompletes(MainSearchThread  &th,
+void SearchPrinter::printPvCompletes(SearchThread      &th,
                                      const TimeControl &tc,
                                      int                rootDepth,
                                      int                pvIdx,
@@ -145,7 +145,7 @@ void SearchPrinter::printPvCompletes(MainSearchThread  &th,
     }
 }
 
-void SearchPrinter::printDepthCompletes(MainSearchThread &th, const TimeControl &tc, int rootDepth)
+void SearchPrinter::printDepthCompletes(SearchThread &th, const TimeControl &tc, int rootDepth)
 {
     if (Config::MessageMode == MsgMode::NORMAL) {
         bool showPonder = th.threads.ctx.inPonder.load(std::memory_order_relaxed);
@@ -157,7 +157,7 @@ void SearchPrinter::printDepthCompletes(MainSearchThread &th, const TimeControl 
     }
 }
 
-void SearchPrinter::printRootMoves(MainSearchThread  &th,
+void SearchPrinter::printRootMoves(SearchThread      &th,
                                    const TimeControl &tc,
                                    size_t             numRootMovesToDisplay)
 {
@@ -220,7 +220,7 @@ void SearchPrinter::printRootMoves(MainSearchThread  &th,
     }
 }
 
-void SearchPrinter::printSearchEnds(MainSearchThread  &th,
+void SearchPrinter::printSearchEnds(SearchThread      &th,
                                     const TimeControl &tc,
                                     int                rootDepth,
                                     SearchThread      &bestThread)
@@ -247,7 +247,7 @@ void SearchPrinter::printSearchEnds(MainSearchThread  &th,
     }
 }
 
-void SearchPrinter::printBestmoveWithoutSearch(MainSearchThread &th,
+void SearchPrinter::printBestmoveWithoutSearch(SearchThread     &th,
                                                Pos               bestMove,
                                                Value             moveValue,
                                                int               rootDepth,
@@ -279,19 +279,19 @@ void SearchPrinter::printBestmoveWithoutSearch(MainSearchThread &th,
     }
 }
 
-bool SearchPrinter::showRealtime(MainSearchThread &th, const TimeControl &tc, int rootDepth)
+bool SearchPrinter::showRealtime(SearchThread &th, const TimeControl &tc, int rootDepth)
 {
     return (th.options().infoMode & SearchOptions::INFO_REALTIME)
            && rootDepth >= REALTIME_MIN_DEPTH;
 }
 
-bool SearchPrinter::showRealtimeInLoop(MainSearchThread &th, const TimeControl &tc, int rootDepth)
+bool SearchPrinter::showRealtimeInLoop(SearchThread &th, const TimeControl &tc, int rootDepth)
 {
     return showRealtime(th, tc, rootDepth) && tc.elapsed() >= REALTIME_MIN_ELAPSED
            && th.options().balanceMode != SearchOptions::BALANCE_TWO;
 }
 
-bool SearchPrinter::showInfo(MainSearchThread &th)
+bool SearchPrinter::showInfo(SearchThread &th)
 {
     return th.options().infoMode & SearchOptions::INFO_DETAIL;
 }

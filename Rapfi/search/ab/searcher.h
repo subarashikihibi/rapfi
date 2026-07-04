@@ -82,7 +82,7 @@ public:
 
     /// The thinking entry point. When program receives search command, main
     /// thread is started first and other threads are launched by main thread.
-    void searchMain(MainSearchThread &th) override;
+    void searchMain(SearchThread &th) override;
 
     /// The main iterative deeping search loop. It calls search() repeatedly with increasing depth
     /// until the stop condition is reached. Results are updated to thread bounded with the board.
