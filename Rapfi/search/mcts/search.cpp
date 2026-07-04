@@ -548,7 +548,7 @@ uint32_t searchNode(Node &node, Board &board, int ply, uint32_t newVisits)
         if (!childNode) {
             HashKey hash = board.zobristKey();
             std::tie(childNode, allocatedNode) =
-                allocateOrFindNode(*searcher.nodeTable, hash, searcher.globalNodeAge);
+                allocateOrFindNode(*searcher.nodeTable, hash, searcher.graph.globalNodeAge);
 
             // Remember this child node in the edge
             childEdge->setChild(childNode);
@@ -858,9 +858,9 @@ void recursiveApply(Node &node, std::function<void(Node &)> *f, PRNG *prng, uint
 
 MCTSSearcher::MCTSSearcher() : Searcher(false)
 {
-    root          = nullptr;
-    nodeTable     = std::make_unique<NodeTable>(Config::NumNodeTableShardsPowerOfTwo);
-    globalNodeAge = 0;
+    graph.root          = nullptr;
+    graph.globalNodeAge = 0;
+    nodeTable           = std::make_unique<NodeTable>(Config::NumNodeTableShardsPowerOfTwo);
 }
 
 void MCTSSearcher::setMemoryLimit(size_t memorySizeKB)
@@ -875,11 +875,13 @@ size_t MCTSSearcher::getMemoryLimit() const
 
 void MCTSSearcher::clear(ThreadPool &pool, bool clearAllMemory)
 {
-    root = nullptr;
+    // Note: previousPosition is deliberately NOT reset here (preserved
+    // semantics; see GraphState's lifecycle comment).
+    graph.root = nullptr;
     if (!clearAllMemory)
         return;
 
-    globalNodeAge = 0;
+    graph.globalNodeAge = 0;
 
     // Clear the node table using all threads, and wait for finish
     pool.main()->runTask([this](SearchThread &th) {
@@ -922,6 +924,11 @@ const RootMove *MCTSSearcher::searchMain(SearchThread &th)
         }
     }
 
+    // Initialize per-search scratch state
+    scratch.numSelectableRootMoves = 0;
+    scratch.lastOutputNodes        = 0;
+    scratch.lastOutputTime         = now();
+
     // Starts worker threads, then starts main thread
     ctx.printer.printSearchStarts(th, ctx.timectl);
     setupRootNode(th);  // Setup root node and other stuffs
@@ -929,7 +936,7 @@ const RootMove *MCTSSearcher::searchMain(SearchThread &th)
 
     // Rank root moves and record best move
     updateRootMovesData(th);
-    ctx.printer.printRootMoves(th, ctx.timectl, numSelectableRootMoves);
+    ctx.printer.printRootMoves(th, ctx.timectl, scratch.numSelectableRootMoves);
 
     return &th.rootMoves[0];
 }
@@ -938,7 +945,7 @@ void MCTSSearcher::search(SearchThread &th)
 {
     SearchOptions &options = th.options();
     Board         &board   = *th.board;
-    assert(!root->isLeaf());
+    assert(!graph.root->isLeaf());
 
     // Main search loop
     std::vector<Node *> selectedPath;
@@ -956,7 +963,7 @@ void MCTSSearcher::search(SearchThread &th)
                 newNumPlayouts = maxNodesToVisit;
         }
 
-        uint32_t newNumNodes = searchNode<true>(*root, board, 0, newNumPlayouts);
+        uint32_t newNumNodes = searchNode<true>(*graph.root, board, 0, newNumPlayouts);
         th.numNodes.fetch_add(newNumNodes, std::memory_order_relaxed);
 
         if (th.isMainThread()) {
@@ -965,19 +972,19 @@ void MCTSSearcher::search(SearchThread &th)
             bool printRootMoves = false;
             if (Config::NodesToPrintMCTSRootmoves > 0) {
                 uint64_t currentNumNodes = th.threads.nodesSearched();
-                uint64_t numElapsedNodes = currentNumNodes - lastOutputNodes;
+                uint64_t numElapsedNodes = currentNumNodes - scratch.lastOutputNodes;
 
                 if (numElapsedNodes >= Config::NodesToPrintMCTSRootmoves) {
-                    lastOutputNodes = currentNumNodes;
-                    printRootMoves  = true;
+                    scratch.lastOutputNodes = currentNumNodes;
+                    printRootMoves          = true;
                 }
             }
             if (Config::TimeToPrintMCTSRootmoves > 0) {
                 Time currentTime = now();
-                Time elapsedTime = currentTime - lastOutputTime;
+                Time elapsedTime = currentTime - scratch.lastOutputTime;
                 if (elapsedTime >= Config::TimeToPrintMCTSRootmoves) {
-                    lastOutputTime = currentTime;
-                    printRootMoves = true;
+                    scratch.lastOutputTime = currentTime;
+                    printRootMoves         = true;
                 }
             }
 
@@ -985,7 +992,7 @@ void MCTSSearcher::search(SearchThread &th)
                 updateRootMovesData(th);
                 th.threads.ctx.printer.printRootMoves(th,
                                                       th.threads.ctx.timectl,
-                                                      numSelectableRootMoves);
+                                                      scratch.numSelectableRootMoves);
             }
 
             if (th.rootMoves.size() == 1
@@ -999,7 +1006,7 @@ bool MCTSSearcher::checkTimeupCondition(const TimeControl &timectl)
 {
     if (timectl.elapsed() >= timectl.maximum())
         return true;
-    if (timectl.checkStop(TimeControl::PlayoutParams {}))
+    if (timectl.checkStop())
         return true;
     return false;
 }
@@ -1010,11 +1017,6 @@ void MCTSSearcher::setupRootNode(SearchThread &th)
     if (!nodeTable)
         clear(th.threads, true);
 
-    // Initialize search data
-    lastOutputNodes        = 0;
-    lastOutputTime         = now();
-    numSelectableRootMoves = 0;
-
     // Get the current root position
     std::vector<Pos> rootPosition;
     for (int moveIndex = 0; moveIndex < th.board->ply(); moveIndex++) {
@@ -1023,32 +1025,32 @@ void MCTSSearcher::setupRootNode(SearchThread &th)
     }
 
     // If the root position has not changed, we do not need to update the root node
-    if (root && rootPosition == previousPosition)
+    if (graph.root && rootPosition == graph.previousPosition)
         return;
 
     SearchOptions &opts = th.options();
 
     // Initialize the root node to expanded state
-    std::tie(root, std::ignore) =
-        allocateOrFindNode(*nodeTable, th.board->zobristKey(), globalNodeAge);
-    if (root->getVisits() == 0)
-        evaluateNode<true>(*root, opts, *th.board, 0);
-    if (root->isLeaf())
-        expandNode<true>(*root, opts, *th.board, 0);
-    assert(root->getEdges()->numEdges > 0);
+    std::tie(graph.root, std::ignore) =
+        allocateOrFindNode(*nodeTable, th.board->zobristKey(), graph.globalNodeAge);
+    if (graph.root->getVisits() == 0)
+        evaluateNode<true>(*graph.root, opts, *th.board, 0);
+    if (graph.root->isLeaf())
+        expandNode<true>(*graph.root, opts, *th.board, 0);
+    assert(graph.root->getEdges()->numEdges > 0);
 
     // Garbage collect old nodes (only when we go forward, and not with singular root)
-    if (rootPosition.size() >= previousPosition.size() && th.rootMoves.size() > 1)
+    if (rootPosition.size() >= graph.previousPosition.size() && th.rootMoves.size() > 1)
         recycleOldNodes(th);
 
     // Update previous Position
-    previousPosition = std::move(rootPosition);
+    graph.previousPosition = std::move(rootPosition);
 }
 
 void MCTSSearcher::recycleOldNodes(SearchThread &th)
 {
     // Increment global node age
-    globalNodeAge += 1;
+    graph.globalNodeAge += 1;
 
     std::atomic<uint32_t> numReachableNodes = 0;
     std::atomic<uint32_t> numRecycledNodes  = 0;
@@ -1061,7 +1063,10 @@ void MCTSSearcher::recycleOldNodes(SearchThread &th)
     th.threads.runOnAllThreads(
         [this, &f](SearchThread &t) {
             PRNG prng(Hash::LCHash(t.id));
-            recursiveApply(*this->root, &f, t.id ? &prng : nullptr, this->globalNodeAge);
+            recursiveApply(*this->graph.root,
+                           &f,
+                           t.id ? &prng : nullptr,
+                           this->graph.globalNodeAge);
         },
         true);
 
@@ -1079,7 +1084,8 @@ void MCTSSearcher::recycleOldNodes(SearchThread &th)
                 std::unique_lock lock(shard.mutex);
                 for (auto it = shard.table.begin(); it != shard.table.end();) {
                     Node *node = std::addressof(const_cast<Node &>(*it));
-                    if (node->getAgeRef().load(std::memory_order_relaxed) != this->globalNodeAge) {
+                    if (node->getAgeRef().load(std::memory_order_relaxed)
+                        != this->graph.globalNodeAge) {
                         it = shard.table.erase(it);
                         numRecycledNodes.fetch_add(1, std::memory_order_relaxed);
                     }
@@ -1092,18 +1098,18 @@ void MCTSSearcher::recycleOldNodes(SearchThread &th)
 
     MESSAGEL("Reachable nodes: " << numReachableNodes.load()
                                  << ", Recycled nodes: " << numRecycledNodes.load()
-                                 << ", Root visit: " << root->getVisits());
+                                 << ", Root visit: " << graph.root->getVisits());
 }
 
 void MCTSSearcher::updateRootMovesData(SearchThread &th)
 {
-    assert(root != nullptr);
-    assert(!root->isLeaf());
+    assert(graph.root != nullptr);
+    assert(!graph.root->isLeaf());
 
     std::vector<uint32_t> edgeIndices;
     std::vector<float>    selectionValues, lcbValues;
     int                   bestChildIndex =
-        selectBestmoveOfChildNode(*root, edgeIndices, selectionValues, lcbValues, true);
+        selectBestmoveOfChildNode(*graph.root, edgeIndices, selectionValues, lcbValues, true);
     uint32_t maxNumRootMovesToPrint =
         std::max<uint32_t>(th.options().multiPV, Config::MaxNonPVRootmovesToPrint);
 
@@ -1114,8 +1120,8 @@ void MCTSSearcher::updateRootMovesData(SearchThread &th)
         rm.pv.resize(1);
     }
 
-    EdgeArray &edges       = *root->getEdges();
-    numSelectableRootMoves = 0;
+    EdgeArray &edges               = *graph.root->getEdges();
+    scratch.numSelectableRootMoves = 0;
     for (size_t i = 0; i < edgeIndices.size(); i++) {
         uint32_t edgeIndex = edgeIndices[i];
         Edge    &childEdge = edges[edgeIndex];
@@ -1142,7 +1148,7 @@ void MCTSSearcher::updateRootMovesData(SearchThread &th)
                 else
                     rm->value = Config::winRateToValue(rm->winRate);
                 rm->utilityStdev = std::sqrt(childNode->getQVar());
-                numSelectableRootMoves++;
+                scratch.numSelectableRootMoves++;
             }
             rm->numNodes = childEdge.getVisits();
             extractPVOfChildNode(*childNode, rm->pv);
@@ -1157,9 +1163,10 @@ void MCTSSearcher::updateRootMovesData(SearchThread &th)
     }
 
     // If we do not have any visited children, display all of them to show policy
-    if (numSelectableRootMoves == 0)
-        numSelectableRootMoves = th.rootMoves.size();
-    numSelectableRootMoves = std::min(numSelectableRootMoves, maxNumRootMovesToPrint);
+    if (scratch.numSelectableRootMoves == 0)
+        scratch.numSelectableRootMoves = th.rootMoves.size();
+    scratch.numSelectableRootMoves =
+        std::min(scratch.numSelectableRootMoves, maxNumRootMovesToPrint);
 
     // Sort the root moves in descending order by selection value
     std::stable_sort(th.rootMoves.begin(),

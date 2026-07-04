@@ -34,20 +34,36 @@ namespace Search::MCTS {
 class MCTSSearcher : public Searcher
 {
 public:
-    /// The node table for storing and finding all transposition nodes
+    /// The node table for storing and finding all transposition nodes.
+    /// Per-game memory: fully cleared only by clear(clearAllMemory=true).
     std::unique_ptr<NodeTable> nodeTable;
-    /// The root node of the MCTS tree
-    Node *root;
-    /// The searched position of last root node
-    std::vector<Pos> previousPosition;
-    /// The global node age to synchronize the node table
-    uint32_t globalNodeAge;
-    /// The number of selectable root moves, set by updateRootMovesData().
-    uint32_t numSelectableRootMoves;
-    // The last number of nodes that we have printed search outputs
-    uint64_t lastOutputNodes;
-    // The last time that we have printed search outputs
-    Time lastOutputTime;
+
+    /// Cross-search graph-reuse state. The node table is transposition-aware,
+    /// so this is a Monte-Carlo search *graph*, not a tree.
+    /// Lifecycle (preserved semantics): clear() nulls root only; globalNodeAge
+    /// resets only with clearAllMemory; previousPosition is never reset — a
+    /// stale one can skip recycleOldNodes on the first search of a new game
+    /// (documented quirk, queued as a behavior-change candidate).
+    struct GraphState
+    {
+        /// The root node of the MCTS search graph
+        Node *root = nullptr;
+        /// The searched position of last root node
+        std::vector<Pos> previousPosition;
+        /// The global node age to synchronize the node table
+        uint32_t globalNodeAge = 0;
+    } graph;
+
+    /// Per-search scratch, reset at the top of searchMain.
+    struct SearchScratch
+    {
+        /// The number of selectable root moves, set by updateRootMovesData().
+        uint32_t numSelectableRootMoves;
+        /// The last number of nodes that we have printed search outputs
+        uint64_t lastOutputNodes;
+        /// The last time that we have printed search outputs
+        Time lastOutputTime;
+    } scratch;
 
     MCTSSearcher();
     ~MCTSSearcher() = default;
