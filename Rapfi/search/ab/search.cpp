@@ -37,6 +37,7 @@
 #include <cassert>
 #include <cmath>
 #include <iomanip>
+#include <optional>
 #include <random>
 
 using namespace Search;
@@ -610,6 +611,203 @@ Value search(Rule         rule,
     }
 }
 
+/// Holds the result of a database probe at a node, consumed by the later steps
+/// of search<Rule,NT> (shallow-pruning gate, terminate-write, record write,
+/// best-value adjust).
+struct DBProbeState
+{
+    Database::DBRecord record;      // valid only when hit
+    bool  hit        = false;
+    bool  checkChild = false;       // child records may exist: disables shallow pruning
+    Bound labelBound = BOUND_NONE;  // bound implied by a WIN/LOSE/DRAW label
+    Bound bound      = BOUND_NONE;  // bound from the record's depth-bound field
+    Value value      = VALUE_NONE;  // record value converted to a search value
+};
+
+/// Step 5 of search<Rule,NT>: query the database and try a database cut.
+/// May widen (alpha, beta) to the full window for PV database cuts.
+/// @return A value to return immediately from the node (block move or database
+///     cut), or std::nullopt to continue searching.
+template <Rule Rule, NodeType NT>
+std::optional<Value> probeDatabaseAtNode(Board        &board,
+                                         SearchStack  *ss,
+                                         Value        &alpha,
+                                         Value        &beta,
+                                         Depth         depth,
+                                         HashKey       posKey,
+                                         DBProbeState &db)
+{
+    constexpr bool PvNode   = NT == PV || NT == Root;
+    constexpr bool RootNode = NT == Root;
+
+    SearchThread *thisThread = board.thisThread();
+    if (!thisThread->dbClient)
+        return std::nullopt;
+
+    ABSearchData  *searchData = thisThread->searchDataAs<ABSearchData>();
+    SearchOptions &options    = thisThread->options();
+
+    Database::DBClient &dbClient          = *thisThread->dbClient;
+    int                 queryPlyIncrement = searchData->rootDepth
+                            / (PvNode ? Config::DatabaseQueryPVIterPerPlyIncrement
+                                      : Config::DatabaseQueryNonPVIterPerPlyIncrement);
+    int queryPly = Config::DatabaseQueryPly + queryPlyIncrement;
+
+    if (ss->skipMove           // Skip query in singular extension
+        || ss->ply > queryPly  // Only query in the first plies to avoid large speed loss
+        || !dbClient.query(board, Rule, db.record))
+        return std::nullopt;
+
+    db.hit        = true;
+    db.value      = storedValueToSearchValue(db.record.value, ss->ply);
+    db.bound      = db.record.bound();
+    db.checkChild = ss->ply < queryPly;
+
+    bool tryCut = true;
+    switch (db.record.label) {
+    case Database::LABEL_NULL: tryCut = false; break;
+    case Database::LABEL_BLOCKMOVE:  // Block this move
+        return -VALUE_BLOCKED;
+    case Database::LABEL_WIN:  // Win for opponent, loss for self
+        db.value = std::min(db.value, VALUE_MATED_FROM_DATABASE);
+        if (db.bound != BOUND_EXACT)
+            db.bound = BOUND_UPPER;
+        db.labelBound = BOUND_UPPER;
+        break;
+    case Database::LABEL_LOSE:  // Loss for opponent, win for self
+        db.value = std::max(db.value, VALUE_MATE_FROM_DATABASE);
+        if (db.bound != BOUND_EXACT)
+            db.bound = BOUND_LOWER;
+        db.labelBound = BOUND_LOWER;
+        break;
+    case Database::LABEL_DRAW:  // Draw for both side
+        db.value      = getDrawValue(board, options, ss->ply);
+        db.bound      = BOUND_EXACT;
+        db.labelBound = BOUND_EXACT;
+        break;
+    default:  // Read depth, bound, value
+        break;
+    }
+
+    if (tryCut && !RootNode) {
+        int  dbDepth = db.record.depth() + Config::DatabaseQueryResultDepthBoundBias;
+        bool dbCut   = dbDepth > depth
+                     && (db.value >= beta ? (db.bound & BOUND_LOWER) : (db.bound & BOUND_UPPER));
+        if (!PvNode && dbCut
+            || db.labelBound == BOUND_LOWER && db.value >= beta   // Win-score-cut
+            || db.labelBound == BOUND_UPPER && db.value <= alpha  // Loss-score-cut
+            || db.labelBound == BOUND_EXACT                       // Draw-score-cut
+        ) {
+            TT.store(posKey,
+                     db.value,
+                     ss->staticEval,
+                     ss->ttPv,
+                     db.bound,
+                     Pos::NONE,
+                     db.labelBound == BOUND_EXACT ? (int)DEPTH_UPPER_BOUND
+                                                  : std::min(dbDepth, (int)DEPTH_UPPER_BOUND),
+                     ss->ply);
+            return db.value;
+        }
+
+        // Expand search window for database cut in PvNode
+        if (PvNode && (dbCut || db.labelBound != BOUND_NONE))
+            alpha = -VALUE_INFINITE, beta = VALUE_INFINITE;
+    }
+
+    return std::nullopt;
+}
+
+/// Step 20 of search<Rule,NT>: write the search result into the database.
+template <Rule Rule, NodeType NT>
+void writeDatabaseRecord(Board              &board,
+                         SearchStack        *ss,
+                         Depth               depth,
+                         Value               bestValue,
+                         Bound               bound,
+                         const DBProbeState &db)
+{
+    constexpr bool PvNode   = NT == PV || NT == Root;
+    constexpr bool RootNode = NT == Root;
+
+    SearchThread  *thisThread = board.thisThread();
+    ABSearchData  *searchData = thisThread->searchDataAs<ABSearchData>();
+    SearchOptions &options    = thisThread->options();
+    Pos            skipMove   = ss->skipMove;
+
+    if (thisThread->dbClient
+        && !Config::DatabaseReadonlyMode      // Never write in database readonly mode
+        && !options.balanceMode               // Never write when we are doing balanced search
+        && (!skipMove || ss->dbChildWritten)  // Never write when in singular extension
+        && ss->numNullMoves == 0              // Never write when in null move search
+        && !(RootNode && (searchData->pvIdx || options.blockMoves.size()))) {
+        bool exact  = PvNode && bound == BOUND_EXACT;
+        bool isWin  = bestValue > VALUE_MATE_IN_MAX_PLY && (bound & BOUND_LOWER);
+        bool isLoss = bestValue < VALUE_MATED_IN_MAX_PLY && (bound & BOUND_UPPER);
+
+        int writePly, writeDepth;
+        if (isWin || isLoss) {
+            if (ss->ply <= Config::DatabaseMateWritePly
+                && mate_step(bestValue, ss->ply) >= Config::DatabaseMateWriteMinStep) {
+                writePly   = Config::DatabaseMateWritePly;
+                writeDepth = exact ? Config::DatabaseMateWriteMinDepthExact
+                                   : Config::DatabaseMateWriteMinDepthNonExact;
+            }
+            else
+                writePly = -1, writeDepth = MAX_DEPTH;
+        }
+        else {
+            writePly   = exact ? Config::DatabasePVWritePly : Config::DatabaseNonPVWritePly;
+            writeDepth = exact ? (std::abs(bestValue) <= Config::DatabaseWriteValueRange
+                                      ? Config::DatabasePVWriteMinDepth
+                                      : MAX_DEPTH)
+                         : bound == BOUND_UPPER ? (bestValue <= Config::DatabaseWriteValueRange
+                                                       ? Config::DatabaseNonPVWriteMinDepth
+                                                       : MAX_DEPTH)
+                                                : (-bestValue >= Config::DatabaseWriteValueRange
+                                                       ? Config::DatabaseNonPVWriteMinDepth
+                                                       : MAX_DEPTH);
+        }
+
+        if (RootNode
+            || ss->dbChildWritten  // Write anyway if we have children that have already written
+            || PvNode && ss->ply <= 1 + isLoss
+                   && options.multiPV > 1   // Always add new record in multipv
+            || ss->ply <= writePly - isWin  // Loss label are recorded one ply less
+                   && (db.hit || depth >= writeDepth + isWin)
+            || db.hit && (isWin || isLoss)  // Always try overwrite existing record with W/L record
+            || PvNode && db.hit             // Try overwrite existing winrate with newer winrate
+                   && ss->ply <= (exact ? Config::DatabaseExactOverwritePly
+                                        : Config::DatabaseNonExactOverwritePly)) {
+            // Assume we have already read record from the database
+            Database::DBRecord newRecord;
+
+            // Assign determined label if we have a sure win/loss
+            // Do not inherit determined label from queried record,
+            // only write determined label when we have searched it.
+            newRecord.label = isWin    ? Database::LABEL_LOSE  // Loss for opponent
+                              : isLoss ? Database::LABEL_WIN   // Win for opponent
+                              : db.hit && !Database::isDeterminedLabel(db.record.label)
+                                  ? db.record.label
+                                  : Database::LABEL_NONE;
+            newRecord.value = searchValueToStoredValue(bestValue, ss->ply);
+            newRecord.setDepthBound((int)depth, bound);
+
+            // Write if there is no db hit, or the new record satisfy the overwrite rule
+            if (!db.hit
+                || Database::checkOverwrite(db.record, newRecord, Config::DatabaseOverwriteRule)) {
+                thisThread->dbClient->save(board,
+                                           Rule,
+                                           newRecord,
+                                           db.hit ? Database::OverwriteRule::Always
+                                                  : Config::DatabaseOverwriteRule);
+                if (Config::DatabaseMandatoryParentWrite)
+                    (ss - 1)->dbChildWritten = true;
+            }
+        }
+    }
+}
+
 /// The main search function for both PV and non-PV nodes
 template <Rule Rule, NodeType NT>
 Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth, bool cutNode)
@@ -716,81 +914,9 @@ Value search(Board &board, SearchStack *ss, Value alpha, Value beta, Depth depth
     }
 
     // Step 5. Database query
-    Database::DBRecord dbRecord;
-    bool               dbHit = false, dbCheckChild = false;
-    Bound              dbLabelBound = BOUND_NONE, dbBound = BOUND_NONE;
-    Value              dbValue;
-    if (thisThread->dbClient) {
-        Database::DBClient &dbClient          = *thisThread->dbClient;
-        int                 queryPlyIncrement = searchData->rootDepth
-                                / (PvNode ? Config::DatabaseQueryPVIterPerPlyIncrement
-                                          : Config::DatabaseQueryNonPVIterPerPlyIncrement);
-        int queryPly = Config::DatabaseQueryPly + queryPlyIncrement;
-
-        if (!skipMove               // Skip query in singular extension
-            && ss->ply <= queryPly  // Only query in the first plies to avoid large speed loss
-            && dbClient.query(board, Rule, dbRecord)) {
-            dbHit        = true;
-            dbValue      = storedValueToSearchValue(dbRecord.value, ss->ply);
-            dbBound      = dbRecord.bound();
-            dbCheckChild = ss->ply < queryPly;
-
-            switch (dbRecord.label) {
-            case Database::LABEL_NULL: break;
-            case Database::LABEL_BLOCKMOVE:  // Block this move
-                return -VALUE_BLOCKED;
-            case Database::LABEL_WIN:  // Win for opponent, loss for self
-                dbValue = std::min(dbValue, VALUE_MATED_FROM_DATABASE);
-                if (dbBound != BOUND_EXACT)
-                    dbBound = BOUND_UPPER;
-                dbLabelBound = BOUND_UPPER;
-                goto try_database_cut;
-            case Database::LABEL_LOSE:  // Loss for opponent, win for self
-                dbValue = std::max(dbValue, VALUE_MATE_FROM_DATABASE);
-                if (dbBound != BOUND_EXACT)
-                    dbBound = BOUND_LOWER;
-                dbLabelBound = BOUND_LOWER;
-                goto try_database_cut;
-            case Database::LABEL_DRAW:  // Draw for both side
-                dbValue      = getDrawValue(board, options, ss->ply);
-                dbBound      = BOUND_EXACT;
-                dbLabelBound = BOUND_EXACT;
-                goto try_database_cut;
-            default:  // Read depth, bound, value
-                goto try_database_cut;
-
-            try_database_cut:
-                if (RootNode)
-                    break;
-
-                int  dbDepth = dbRecord.depth() + Config::DatabaseQueryResultDepthBoundBias;
-                bool dbCut =
-                    dbDepth > depth
-                    && (dbValue >= beta ? (dbBound & BOUND_LOWER) : (dbBound & BOUND_UPPER));
-                if (!PvNode && dbCut
-                    || dbLabelBound == BOUND_LOWER && dbValue >= beta   // Win-score-cut
-                    || dbLabelBound == BOUND_UPPER && dbValue <= alpha  // Loss-score-cut
-                    || dbLabelBound == BOUND_EXACT                      // Draw-score-cut
-                ) {
-                    TT.store(posKey,
-                             dbValue,
-                             ss->staticEval,
-                             ss->ttPv,
-                             dbBound,
-                             Pos::NONE,
-                             dbLabelBound == BOUND_EXACT
-                                 ? (int)DEPTH_UPPER_BOUND
-                                 : std::min(dbDepth, (int)DEPTH_UPPER_BOUND),
-                             ss->ply);
-                    return dbValue;
-                }
-
-                // Expand search window for database cut in PvNode
-                if (PvNode && (dbCut || dbLabelBound != BOUND_NONE))
-                    alpha = -VALUE_INFINITE, beta = VALUE_INFINITE;
-            }
-        }
-    }
+    DBProbeState db;
+    if (auto dbCutValue = probeDatabaseAtNode<Rule, NT>(board, ss, alpha, beta, depth, posKey, db))
+        return *dbCutValue;
 
     // Step 6. Static evaluation
     Value eval        = VALUE_NONE;
@@ -998,7 +1124,7 @@ moves_loop:
         // Step 12. Pruning at shallow depth
         // Do pruning only when we have non-losing moves, otherwise we may have a false mate.
         // Also skip pruning if there might be a child database record we want to read.
-        if (!RootNode && !dbCheckChild && bestValue > VALUE_MATED_IN_MAX_PLY) {
+        if (!RootNode && !db.checkChild && bestValue > VALUE_MATED_IN_MAX_PLY) {
             // Move count pruning: skip move if movecount is above threshold (~107 elo)
             if (moveCount >= futilityMoveCount(depth, improvement > 0))
                 continue;
@@ -1217,7 +1343,7 @@ moves_loop:
         // be trusted, so we return immediately without updating best move, PV and TT.
         if (thisThread->threads.isTerminating()) {
             if (thisThread->dbClient
-                && !dbHit  // Write when no dbHit, we never overwrite any existing record with null
+                && !db.hit  // Write when no dbHit, we never overwrite any existing record with null
                 && !Config::DatabaseReadonlyMode  // Never write in database readonly mode
                 && ss->dbChildWritten  // Write anyway if we have children that have already written
             ) {
@@ -1364,91 +1490,21 @@ moves_loop:
 
     // Step 20. Update database record
     Bound bound = bestValue >= beta ? BOUND_LOWER : PvNode && bestMove ? BOUND_EXACT : BOUND_UPPER;
-    if (thisThread->dbClient
-        && !Config::DatabaseReadonlyMode      // Never write in database readonly mode
-        && !options.balanceMode               // Never write when we are doing balanced search
-        && (!skipMove || ss->dbChildWritten)  // Never write when in singular extension
-        && ss->numNullMoves == 0              // Never write when in null move search
-        && !(RootNode && (searchData->pvIdx || options.blockMoves.size()))) {
-        bool exact  = PvNode && bound == BOUND_EXACT;
-        bool isWin  = bestValue > VALUE_MATE_IN_MAX_PLY && (bound & BOUND_LOWER);
-        bool isLoss = bestValue < VALUE_MATED_IN_MAX_PLY && (bound & BOUND_UPPER);
-
-        int writePly, writeDepth;
-        if (isWin || isLoss) {
-            if (ss->ply <= Config::DatabaseMateWritePly
-                && mate_step(bestValue, ss->ply) >= Config::DatabaseMateWriteMinStep) {
-                writePly   = Config::DatabaseMateWritePly;
-                writeDepth = exact ? Config::DatabaseMateWriteMinDepthExact
-                                   : Config::DatabaseMateWriteMinDepthNonExact;
-            }
-            else
-                writePly = -1, writeDepth = MAX_DEPTH;
-        }
-        else {
-            writePly   = exact ? Config::DatabasePVWritePly : Config::DatabaseNonPVWritePly;
-            writeDepth = exact ? (std::abs(bestValue) <= Config::DatabaseWriteValueRange
-                                      ? Config::DatabasePVWriteMinDepth
-                                      : MAX_DEPTH)
-                         : bound == BOUND_UPPER ? (bestValue <= Config::DatabaseWriteValueRange
-                                                       ? Config::DatabaseNonPVWriteMinDepth
-                                                       : MAX_DEPTH)
-                                                : (-bestValue >= Config::DatabaseWriteValueRange
-                                                       ? Config::DatabaseNonPVWriteMinDepth
-                                                       : MAX_DEPTH);
-        }
-
-        if (RootNode
-            || ss->dbChildWritten  // Write anyway if we have children that have already written
-            || PvNode && ss->ply <= 1 + isLoss
-                   && options.multiPV > 1   // Always add new record in multipv
-            || ss->ply <= writePly - isWin  // Loss label are recorded one ply less
-                   && (dbHit || depth >= writeDepth + isWin)
-            || dbHit && (isWin || isLoss)  // Always try overwrite existing record with W/L record
-            || PvNode && dbHit             // Try overwrite existing winrate with newer winrate
-                   && ss->ply <= (exact ? Config::DatabaseExactOverwritePly
-                                        : Config::DatabaseNonExactOverwritePly)) {
-            // Assume we have already read record from the database
-            Database::DBRecord newRecord;
-
-            // Assign determined label if we have a sure win/loss
-            // Do not inherit determined label from queried record,
-            // only write determined label when we have searched it.
-            newRecord.label = isWin    ? Database::LABEL_LOSE  // Loss for opponent
-                              : isLoss ? Database::LABEL_WIN   // Win for opponent
-                              : dbHit && !Database::isDeterminedLabel(dbRecord.label)
-                                  ? dbRecord.label
-                                  : Database::LABEL_NONE;
-            newRecord.value = searchValueToStoredValue(bestValue, ss->ply);
-            newRecord.setDepthBound((int)depth, bound);
-
-            // Write if there is no db hit, or the new record satisfy the overwrite rule
-            if (!dbHit
-                || Database::checkOverwrite(dbRecord, newRecord, Config::DatabaseOverwriteRule)) {
-                thisThread->dbClient->save(board,
-                                           Rule,
-                                           newRecord,
-                                           dbHit ? Database::OverwriteRule::Always
-                                                 : Config::DatabaseOverwriteRule);
-                if (Config::DatabaseMandatoryParentWrite)
-                    (ss - 1)->dbChildWritten = true;
-            }
-        }
-    }
+    writeDatabaseRecord<Rule, NT>(board, ss, depth, bestValue, bound, db);
 
     // Adjust best value with Win/Loss record from database in PV node
-    if (!RootNode && PvNode && dbHit) {
-        if (dbLabelBound == BOUND_LOWER)
-            bestValue = std::max(bestValue, dbValue);
-        else if (dbLabelBound == BOUND_UPPER)
-            bestValue = std::min(bestValue, dbValue);
-        else if (int dbDepth = dbRecord.depth() + Config::DatabaseQueryResultDepthBoundBias;
-                 (dbBound == BOUND_EXACT                          // Exact-cut
-                  || dbBound == BOUND_LOWER && dbValue >= beta    // Beta-cut
-                  || dbBound == BOUND_UPPER && dbValue <= alpha)  // Alpha-cut
+    if (!RootNode && PvNode && db.hit) {
+        if (db.labelBound == BOUND_LOWER)
+            bestValue = std::max(bestValue, db.value);
+        else if (db.labelBound == BOUND_UPPER)
+            bestValue = std::min(bestValue, db.value);
+        else if (int dbDepth = db.record.depth() + Config::DatabaseQueryResultDepthBoundBias;
+                 (db.bound == BOUND_EXACT                           // Exact-cut
+                  || db.bound == BOUND_LOWER && db.value >= beta    // Beta-cut
+                  || db.bound == BOUND_UPPER && db.value <= alpha)  // Alpha-cut
                  && dbDepth > std::max((int)std::ceil(depth), ss->dbValueDepth)
-                 && dbValue > bestValue - (dbDepth - (int)std::ceil(depth)) * 10)
-            bestValue = dbValue, bound = dbBound, ss->dbValueDepth = dbDepth;
+                 && db.value > bestValue - (dbDepth - (int)std::ceil(depth)) * 10)
+            bestValue = db.value, bound = db.bound, ss->dbValueDepth = dbDepth;
     }
 
     // Step 21. Save TT entry for this position
