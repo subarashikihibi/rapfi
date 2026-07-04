@@ -134,8 +134,8 @@ struct Cell
     template <Rule R>
     void updatePattern4AndScore(PatternCode pcodeBlack, PatternCode pcodeWhite)
     {
-        Pattern4Score p4ScoreBlack = Config::getP4Score(R, BLACK, pcodeBlack);
-        Pattern4Score p4ScoreWhite = Config::getP4Score(R, WHITE, pcodeWhite);
+        Pattern4Score p4ScoreBlack = Evaluation::getP4Score(R, BLACK, pcodeBlack);
+        Pattern4Score p4ScoreWhite = Evaluation::getP4Score(R, WHITE, pcodeWhite);
         pattern4[BLACK]            = (Pattern4)p4ScoreBlack;
         pattern4[WHITE]            = (Pattern4)p4ScoreWhite;
         score[BLACK]               = p4ScoreBlack.scoreSelf() + p4ScoreWhite.scoreOppo();

@@ -34,8 +34,7 @@
 /// the engine. It is split out of config.h so that hot-path consumers
 /// (game/board.h, eval/) do not pull in the whole config surface; the tables
 /// are still populated by config.cpp (model loading), game/pattern.cpp
-/// (pattern4 LUT) and tuning/tuner.cpp (offline tuning), and the symbols stay
-/// in namespace Config until the config decomposition finishes.
+/// (pattern4 LUT) and tuning/tuner.cpp (offline tuning).
 
 /// Total count of patterncode (pattern combination for 4 directions)
 constexpr uint32_t PCODE_NB = combineNumber(PATTERN_NB, 4);
@@ -82,7 +81,7 @@ struct Pattern4Score
 };
 static_assert(sizeof(Pattern4Score) == sizeof(int32_t));
 
-namespace Config {
+namespace Evaluation {
 
 /// Scaling factor of the sigmoid that maps Value to winning rate.
 extern float ScalingFactor;
@@ -132,4 +131,4 @@ inline Value winRateToValue(float winRate)
     return Value(valueF32);
 }
 
-}  // namespace Config
+}  // namespace Evaluation

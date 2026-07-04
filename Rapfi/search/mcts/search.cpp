@@ -1226,7 +1226,7 @@ void MCTSSearcher::updateRootMovesData(SearchThread &th)
                 else if (Value up = childBound.childUpperBound(); up <= VALUE_MATED_IN_MAX_PLY)
                     rm->value = mated_in(std::max(mate_step(up, 0) - th.board->ply(), 0));
                 else
-                    rm->value = Config::winRateToValue(rm->winRate);
+                    rm->value = Evaluation::winRateToValue(rm->winRate);
                 rm->utilityStdev = std::sqrt(childNode->getQVar());
                 scratch.numSelectableRootMoves++;
             }

@@ -56,7 +56,7 @@ void Node::setTerminal(Value value)
         drawRate = 0.0f;
     }
     else {
-        utility  = Config::valueToWinRate(value) * 2 - 1.0f;
+        utility  = Evaluation::valueToWinRate(value) * 2 - 1.0f;
         drawRate = 1.0f;
     }
 

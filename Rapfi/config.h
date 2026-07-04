@@ -18,9 +18,9 @@
 
 #pragma once
 
-// The classical eval tables and their query API live in eval/scoretables.h (still in
-// namespace Config until the per-module config decomposition). Hot-path headers should
-// include that header directly instead of this one.
+// The classical eval tables and their query API live in namespace Evaluation in
+// eval/scoretables.h. Hot-path headers should include that header directly instead
+// of this one.
 #include "eval/scoretables.h"
 
 #include "core/pos.h"

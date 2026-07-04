@@ -44,7 +44,7 @@ ValueType::ValueType(float winLogits, float lossLogits, float drawLogits, bool a
         drawProb *= invSum;
     }
 
-    val = Config::winRateToValue(winningRate());
+    val = Evaluation::winRateToValue(winningRate());
 }
 
 ValueType ValueType::valueOfDrawWinRate(float drawWinRate, float newdrawProb)
