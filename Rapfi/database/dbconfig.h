@@ -18,10 +18,12 @@
 
 #pragma once
 
+#include "dbstorage.h"
 #include "dbtypes.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 namespace Database {
@@ -58,6 +60,13 @@ struct DatabaseConfig
         int  numBackupsOnSave = 1;
         bool ignoreCorrupted  = false;
     } yixindb;
+
+    /// Parse state, not a TOML knob: mirrors the legacy null-DatabaseMaker
+    /// sentinel. True only when the last readDatabase parse got through the
+    /// yixindb options without throwing; createDBStorage returns a silent
+    /// nullptr while false (a failed reload must not leave the protocol
+    /// factory live with stale or half-parsed options).
+    bool factoryEnabled = false;
 
     // [database.libfile]
     struct LibFile
@@ -124,5 +133,20 @@ struct DatabaseConfig
 
 /// The global live database configuration.
 extern DatabaseConfig DatabaseCfg;
+
+/// Open a database storage from config - the throwing core. Does NOT log.
+/// @param cfg Database configuration (type + backend options).
+/// @param utf8URL URL of the database (utf-8); empty to use cfg.url.
+/// @return The storage instance (never nullptr).
+/// @throws std::invalid_argument for an unknown (or empty) cfg.type;
+///     backend construction failures (e.g. DBStorageError) propagate.
+std::unique_ptr<DBStorage> openDBStorage(const DatabaseConfig &cfg, std::string utf8URL = "");
+
+/// Create a database storage from config - the protocol-facing wrapper.
+/// Returns nullptr silently unless cfg.factoryEnabled (the old
+/// null-DatabaseMaker sentinel: empty type, unknown-type leftovers from a
+/// failed parse, or a parse that threw mid-[database]); otherwise logs the
+/// opening/loaded messages and converts any failure into ERRORL + nullptr.
+std::unique_ptr<DBStorage> createDBStorage(const DatabaseConfig &cfg, std::string utf8URL = "");
 
 }  // namespace Database

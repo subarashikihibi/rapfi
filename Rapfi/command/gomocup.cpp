@@ -361,7 +361,7 @@ void getOption()
     else if (token == "USEDATABASE") {
         std::cin >> val;
         if (val == 1)
-            Search::Engine.setupDatabase(Config::createDefaultDBStorage());
+            Search::Engine.setupDatabase(Database::createDBStorage(Database::DatabaseCfg));
         else
             Search::Engine.setupDatabase(nullptr);
     }
@@ -479,7 +479,7 @@ void setDatabase()
     auto databasePath = readPathFromInput();
     if (!databasePath.empty() && !Database::DatabaseCfg.type.empty()) {
         Database::DatabaseCfg.url     = databasePath.u8string();
-        auto newDatabaseStorage = Config::createDefaultDBStorage();
+        auto newDatabaseStorage = Database::createDBStorage(Database::DatabaseCfg);
         if (newDatabaseStorage)
             Search::Engine.setupDatabase(std::move(newDatabaseStorage));
     }
@@ -1124,7 +1124,7 @@ void splitDatabase()
     auto databasePath = readPathFromInput();
     if (Search::Engine.dbStorage()) {
         std::string dbPathUTF8 = databasePath.u8string();
-        if (auto dbToSplit = Config::createDefaultDBStorage(dbPathUTF8)) {
+        if (auto dbToSplit = Database::createDBStorage(Database::DatabaseCfg, dbPathUTF8)) {
             auto   startTime  = now();
             size_t writeCount = ::Database::splitDatabase(*Search::Engine.dbStorage(),
                                                           *dbToSplit,
@@ -1142,7 +1142,7 @@ void mergeDatabase()
     auto databasePath = readPathFromInput();
     if (Search::Engine.dbStorage()) {
         std::string dbPathUTF8 = databasePath.u8string();
-        if (auto dbToMerge = Config::createDefaultDBStorage(dbPathUTF8)) {
+        if (auto dbToMerge = Database::createDBStorage(Database::DatabaseCfg, dbPathUTF8)) {
             size_t writeCount = mergeDatabase(*Search::Engine.dbStorage(),
                                               *dbToMerge,
                                               Database::DatabaseCfg.search.overwriteRule);

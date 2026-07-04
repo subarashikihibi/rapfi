@@ -21,12 +21,10 @@
 #include "command/command.h"
 #include "core/compressor.h"
 #include "core/iohelper.h"
-#include "database/dbclient.h"
 #include "database/dbconfig.h"
-#include "database/dbstorage.h"
-#include "database/yxdbstorage.h"
 #include "eval/evalconfig.h"
 #include "eval/evaluator.h"
+#include "eval/scoretables.h"
 #include "eval/mix10nnue.h"
 #include "eval/mix9svqnnue.h"
 #include "game/pattern.h"
@@ -41,7 +39,6 @@
 
 #include <cpptoml.h>
 #include <fstream>
-#include <functional>
 #include <limits>
 #ifdef MULTI_THREADING
     #include <thread>
@@ -83,13 +80,6 @@ namespace Config {
 // General options
 
 GeneralConfig GeneralCfg;
-
-// -------------------------------------------------
-// Database options
-
-/// Database storage factory, which takes the url (in utf-8 encoding)
-/// and returns a unique pointer to an instance of DBStorage.
-std::function<std::unique_ptr<::Database::DBStorage>(std::string)> DatabaseMaker;
 
 // -------------------------------------------------
 
@@ -596,7 +586,7 @@ void Config::readDatabase(const cpptoml::table &t)
         t.get_as<size_t>("record_cache_size").value_or(DatabaseCfg.recordCacheSize);
     DatabaseCfg.legacyFileCodePage =
         t.get_as<int>("legacy_file_code_page").value_or(DatabaseCfg.legacyFileCodePage);
-    DatabaseMaker = nullptr;
+    DatabaseCfg.factoryEnabled = false;
 
     if (DatabaseCfg.type == "yixindb") {
         if (DatabaseCfg.url.empty())
@@ -613,32 +603,7 @@ void Config::readDatabase(const cpptoml::table &t)
             DatabaseCfg.yixindb.ignoreCorrupted =
                 args->get_as<bool>("ignore_corrupted").value_or(DatabaseCfg.yixindb.ignoreCorrupted);
         }
-
-        DatabaseMaker = [compressedSave   = DatabaseCfg.yixindb.compressedSave,
-                         saveOnClose      = DatabaseCfg.yixindb.saveOnClose,
-                         numBackupsOnSave = DatabaseCfg.yixindb.numBackupsOnSave,
-                         ignoreCorrupted  = DatabaseCfg.yixindb.ignoreCorrupted](
-                            std::string utf8URL) -> std::unique_ptr<::Database::DBStorage> {
-            try {
-                auto dbPath    = std::filesystem::u8path(utf8URL);
-                bool existing  = std::filesystem::exists(dbPath);
-                auto startTime = now();
-                MESSAGEL("Opening yixin database at " << pathToConsoleString(dbPath) << " ...");
-                auto dbStorage = std::make_unique<::Database::YXDBStorage>(dbPath,
-                                                                           compressedSave,
-                                                                           saveOnClose,
-                                                                           numBackupsOnSave,
-                                                                           ignoreCorrupted);
-                if (existing)
-                    MESSAGEL("Loaded Yixin database (" << dbStorage->size() << " records) using "
-                                                       << (now() - startTime) << " ms.");
-                return std::move(dbStorage);
-            }
-            catch (const std::exception &e) {
-                ERRORL("Failed to create yixin database: " << e.what());
-                return nullptr;
-            }
-        };
+        DatabaseCfg.factoryEnabled = true;
     }
     else if (!DatabaseCfg.type.empty()) {
         throw std::runtime_error("unsupported database type " + DatabaseCfg.type);
@@ -712,7 +677,7 @@ void Config::readDatabase(const cpptoml::table &t)
     }
 
     if (DatabaseCfg.defaultEnabled)
-        Search::Engine.setupDatabase(createDefaultDBStorage());
+        Search::Engine.setupDatabase(Database::createDBStorage(DatabaseCfg));
 }
 
 /// Read a value model from a model table.
@@ -889,10 +854,4 @@ void Config::exportModel(std::ostream &outStream)
 
         out->write(reinterpret_cast<char *>(scores), sizeof(scores));
     }
-}
-
-std::unique_ptr<::Database::DBStorage> Config::createDefaultDBStorage(std::string utf8URL)
-{
-    return DatabaseMaker ? DatabaseMaker(utf8URL.empty() ? Database::DatabaseCfg.url : utf8URL)
-                         : nullptr;
 }

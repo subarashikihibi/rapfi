@@ -18,11 +18,6 @@
 
 #pragma once
 
-// The classical eval tables and their query API live in namespace Evaluation in
-// eval/scoretables.h. Hot-path headers should include that header directly instead
-// of this one.
-#include "eval/scoretables.h"
-
 #include "core/pos.h"
 #include "core/types.h"
 
@@ -33,18 +28,9 @@
 /// MsgMode represents the message mode that controls how messages are outputed in search.
 enum class MsgMode { NONE, BRIEF, NORMAL, UCILIKE };
 
-namespace Database {
-class DBStorage;  // forward declaration
-}
-
 namespace Config {
 
 extern const std::string InternalConfig;
-
-// -------------------------------------------------
-// Model configs
-// (ScalingFactor and the EVALS/EVALS_THREAT/P4SCORES tables are declared in
-// eval/scoretables.h together with their query API)
 
 // -------------------------------------------------
 // General options
@@ -92,13 +78,5 @@ bool loadModel(std::istream &inStream);
 
 /// Exports current classic evaluation model to a binary stream.
 void exportModel(std::ostream &outStream);
-
-// -------------------------------------------------
-// Database loading
-
-/// Create a default database storage instance from config.
-/// @param url URL of the database, empty for default url from config.
-/// @return The pointer to DBStorage instance, or nullptr if can not create.
-std::unique_ptr<::Database::DBStorage> createDefaultDBStorage(std::string url = "");
 
 }  // namespace Config
