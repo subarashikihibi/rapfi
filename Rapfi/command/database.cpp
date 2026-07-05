@@ -248,13 +248,8 @@ void Command::database(int argc, char *argv[])
          cxxopts::value<std::string>()->default_value(""))  //
         ("h,help", "Print database usage");
 
-    try {
-        auto args = options.parse(argc, argv);
-
-        if (args.count("help")) {
-            std::cout << options.help() << std::endl;
-            std::exit(EXIT_SUCCESS);
-        }
+    parseSubcommandArguments(options, argc, argv, "database command",
+                             [&](const cxxopts::ParseResult &args) {
 
         {  // Load database command sequences
             std::string commands = args["commands"].as<std::string>();
@@ -266,11 +261,7 @@ void Command::database(int argc, char *argv[])
         }
 
         dbStorage = createDBStorage(args);
-    }
-    catch (const std::exception &e) {
-        ERRORL("database command: " << e.what());
-        std::exit(EXIT_FAILURE);
-    }
+    });
 
     std::istream &is =
         commandStream.peek() == std::istringstream::traits_type::eof() ? std::cin : commandStream;

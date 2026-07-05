@@ -176,13 +176,8 @@ void Command::selfplay(int argc, char *argv[])
     addPlayOptions(options);
     addOpengenOptions(options, opengenCfg);
 
-    try {
-        auto args = options.parse(argc, argv);
-
-        if (args.count("help")) {
-            std::cout << options.help() << std::endl;
-            std::exit(EXIT_SUCCESS);
-        }
+    parseSubcommandArguments(options, argc, argv, "selfplay argument",
+                             [&](const cxxopts::ParseResult &args) {
 
         if (args.count("output")) {
             // Open output file and change output stream
@@ -256,40 +251,15 @@ void Command::selfplay(int argc, char *argv[])
             throw std::invalid_argument("min-draw-ply must be at least 0");
         if (forceDrawPly < 0)
             throw std::invalid_argument("force-draw-ply must be at least 0");
-    }
-    catch (const std::exception &e) {
-        ERRORL("selfplay argument: " << e.what());
-        std::exit(EXIT_FAILURE);
-    }
+    });
 
     if (!outputPath.empty()) {
         // Create data writer
-        switch (dataWriterType) {
-        case DataWriterType::PlainText:
-            dataWriter = std::make_unique<PlainTextDataWriter>(outputPath);
-            break;
-
-        case DataWriterType::SimpleBinary:
-            dataWriter = std::make_unique<SimpleBinaryDataWriter>(outputPath, false);
-            break;
-
-        case DataWriterType::SimpleBinaryLZ4:
-            dataWriter = std::make_unique<SimpleBinaryDataWriter>(outputPath, true);
-            break;
-
-        case DataWriterType::PackedBinary:
-            dataWriter = std::make_unique<PackedBinaryDataWriter>(outputPath, false);
-            break;
-
-        case DataWriterType::PackedBinaryLZ4:
-            dataWriter = std::make_unique<PackedBinaryDataWriter>(outputPath, true);
-            break;
-
-        case DataWriterType::Numpy:
+        if (dataWriterType == DataWriterType::Numpy) {
             ERRORL("Numpy data writer is not supported in selfplay.");
             std::exit(EXIT_FAILURE);
-            break;
         }
+        dataWriter = Tuning::makeDataWriter(dataWriterType, outputPath);
     }
 
     // Setup signal handler to close dataset file when receiving signal
