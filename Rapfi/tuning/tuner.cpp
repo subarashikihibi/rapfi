@@ -23,7 +23,6 @@
 #include "../core/random.h"
 #include "../core/time.h"
 #include "../eval/eval.h"
-#include "BS_thread_pool.hpp"
 #include "dataset.h"
 #include "optimizer.h"
 
@@ -139,10 +138,13 @@ void collectMoveScoreCoeffs(Rule r, const Board &board, Collector collect)
     }
 }
 
-static BS::thread_pool ThreadPool;
-
 template <typename InputIt, typename T, typename BinaryOp, typename UnaryOp>
-T parallel_transform_reduce(InputIt first, InputIt last, T init, BinaryOp reduce, UnaryOp transform)
+T parallel_transform_reduce(BS::thread_pool &pool,
+                            InputIt          first,
+                            InputIt          last,
+                            T                init,
+                            BinaryOp         reduce,
+                            UnaryOp          transform)
 {
     auto length = std::distance(first, last);
     if (length == 0)
@@ -150,7 +152,7 @@ T parallel_transform_reduce(InputIt first, InputIt last, T init, BinaryOp reduce
 
     constexpr size_t MaxBlockSize = 16384;
     constexpr size_t MinBlockSize = 4096;
-    size_t           numThreads   = ThreadPool.get_thread_count();
+    size_t           numThreads   = pool.get_thread_count();
     size_t blockSize = std::clamp<size_t>(length / numThreads, MinBlockSize, MaxBlockSize);
     size_t numBlocks = (length + blockSize - 1) / blockSize;
     std::vector<std::future<T>> futures;
@@ -160,7 +162,7 @@ T parallel_transform_reduce(InputIt first, InputIt last, T init, BinaryOp reduce
         auto blockBegin = first + i * blockSize;
         auto blockEnd   = std::min(blockBegin + blockSize, last);
 
-        futures.emplace_back(ThreadPool.submit_task([blockBegin, blockEnd, transform]() {
+        futures.emplace_back(pool.submit_task([blockBegin, blockEnd, transform]() {
             T blockResult = T {};
             for (auto it = blockBegin; it != blockEnd; ++it)
                 blockResult += transform(*it);
@@ -176,7 +178,7 @@ T parallel_transform_reduce(InputIt first, InputIt last, T init, BinaryOp reduce
         size_t newNumFeatures = 0;
 
         for (size_t i = futureBegin; i + (chunkSize - 1) < futureEnd; i += chunkSize) {
-            futures.emplace_back(ThreadPool.submit_task([&futures, reduce, chunkSize, i]() {
+            futures.emplace_back(pool.submit_task([&futures, reduce, chunkSize, i]() {
                 T chunkResult = T {};
                 for (size_t j = 0; j < chunkSize; ++j)
                     chunkResult = reduce(chunkResult, futures[i + j].get());
@@ -526,6 +528,9 @@ void Tuner::initParams()
         ruleSetIdx.push_back(RENJU + WHITE);
     }
 
+    // The tuner intentionally mutates the LIVE Evaluation:: tables in place
+    // through these stored addresses: evaluation during tuning always sees the
+    // current candidate parameters without a copy/swap step.
     for (int r : ruleSetIdx) {
         if (config.tuneEval) {
             addArrayParams<Eval>(
@@ -609,7 +614,7 @@ void Tuner::initTuneEntries(std::vector<TuneEntry> &tuneEntries, class Dataset &
             totalEntriesRead += dataEntries.size();
 
         // Transform batched raw data entry to batched tune entry in parallel
-        ThreadPool.detach_task(
+        threadPool.detach_task(
             [this, &tuneEntries, &tuneEntriesMutex, data = std::move(dataEntries)]() {
                 std::unordered_map<int, Board> boardObjectCache;
                 std::vector<TuneEntry>         entries;
@@ -642,7 +647,7 @@ void Tuner::initTuneEntries(std::vector<TuneEntry> &tuneEntries, class Dataset &
     MESSAGEL("Read " << totalEntriesRead << " tune entries from dataset, initializing...");
 
     // Collect tune Entries from all jobs
-    while (!ThreadPool.wait_for(std::chrono::seconds(10)))
+    while (!threadPool.wait_for(std::chrono::seconds(10)))
         MESSAGEL(tuneEntries.size() << " tune entries are initialized...");
 
     tuneEntries.shrink_to_fit();
@@ -709,6 +714,7 @@ Float Tuner::computeEvaluationLoss(Float K, bool validation) const
         return Float(0.0);
 
     return parallel_transform_reduce(
+               threadPool,
                entries.begin(),
                entries.end(),
                Float(0.0),
@@ -728,7 +734,8 @@ Float Tuner::computeMoveScoreLoss(bool validation) const
     if (entries.empty())
         return Float(0.0);
 
-    return parallel_transform_reduce(entries.begin(),
+    return parallel_transform_reduce(threadPool,
+                                     entries.begin(),
                                      entries.end(),
                                      Float(0.0),
                                      std::plus<Float>(),
@@ -763,7 +770,7 @@ void Tuner::computeGradientBatch(std::vector<Float> &grads, Float K, size_t batc
         TuneEntryIterator jobEnd = jobBegin + (jobIdx == numJobs ? undivided : jobSize);
 
         // Accumulate local gradient asynchronously
-        auto job = ThreadPool.submit_task([this, K, jobBegin, jobEnd] {
+        auto job = threadPool.submit_task([this, K, jobBegin, jobEnd] {
             std::vector<Float> localGrads(tuneParams.size(), Float(0.0));
 
             for (TuneEntryIterator e = jobBegin; e != jobEnd; e++) {

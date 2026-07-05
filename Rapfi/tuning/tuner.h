@@ -22,6 +22,7 @@
 #include "../core/types.h"
 #include "../game/board.h"
 
+#include <BS_thread_pool.hpp>
 #include <array>
 #include <flat.hpp/flat_map.hpp>
 #include <functional>
@@ -188,6 +189,9 @@ private:
     std::vector<TuneEntry>        trainTuneEntries, valTuneEntries;
     std::vector<TuneParam>        tuneParams;
     std::vector<ParamsSyncRecord> syncRecords;
+    /// Worker pool for dataset transformation and loss/gradient computation.
+    /// mutable: the const loss-computation methods submit tasks through it.
+    mutable BS::thread_pool threadPool;
 
     void  initParams();
     void  initTuneEntries(std::vector<TuneEntry> &tuneEntries, class Dataset &dataset);
