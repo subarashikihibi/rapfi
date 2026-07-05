@@ -23,19 +23,12 @@
 #include "core/iohelper.h"
 #include "database/dbconfig.h"
 #include "eval/evalconfig.h"
-#include "eval/evaluator.h"
 #include "eval/scoretables.h"
-#include "eval/mix10nnue.h"
-#include "eval/mix9svqnnue.h"
 #include "game/pattern.h"
 #include "search/hashtable.h"
 #include "search/searchconfig.h"
 #include "search/searcher.h"
 #include "search/searchthread.h"
-
-#ifdef USE_ORT_EVALUATOR
-    #include "eval/onnxevaluator.h"
-#endif
 
 #include <cpptoml.h>
 #include <fstream>
@@ -98,6 +91,14 @@ void readValueModel(const cpptoml::table &t, SetterType setter);
 }  // namespace Config
 
 /// Load config from a stream.
+///
+/// Besides filling the module config structs (GeneralCfg, Search::SearchCfg/
+/// TimeCfg, Database::DatabaseCfg, Evaluation::EvalCfg), the readers carry
+/// engine side effects, applied as keys are parsed: readGeneral resizes the TT
+/// (default_tt_size_kb) and normalizes default_thread_num = 0; readSearch
+/// switches the searcher (default_searcher); readDatabase attaches the
+/// database (enable_by_default); readEvaluator installs the evaluator maker.
+/// loadConfig starts by resetting the evaluator maker and database.
 /// @param configStream A input stream that contains a config file.
 /// @return Returns true if loading succeeded, otherwise returns false.
 bool Config::loadConfig(std::istream &configStream)
@@ -425,136 +426,27 @@ void Config::readModel(const cpptoml::table &t)
 /// Read evaluator table in the config.
 void Config::readEvaluator(const cpptoml::table &t)
 {
-    using namespace std::filesystem;
-
     auto evaluatorType = t.get_as<std::string>("type");
     auto weights       = t.get_table_array("weights");
     if (!evaluatorType || !weights || weights->begin() == weights->end())
         return;
 
-    auto warpEvaluatorMaker = [weights,
-                               evaluatorName = *evaluatorType](auto maker,
-                                                               bool seperateBlackAndWhiteWeights) {
-        return [=](int              boardSize,
-                   Rule             rule,
-                   Numa::NumaNodeId numaId) -> std::unique_ptr<Evaluation::Evaluator> {
-            try {
-                for (auto weightCfg : *weights) {
-                    path weightPath;
-                    path blackWeightPath, whiteWeightPath;
-
-                    if (auto weightFile = weightCfg->get_as<std::string>("weight_file"))
-                        weightPath = Command::getModelFullPath(u8path(*weightFile));
-                    else if (!seperateBlackAndWhiteWeights)
-                        throw std::runtime_error("must specify weight_file in weight configs.");
-
-                    if (seperateBlackAndWhiteWeights && weightPath.empty()) {
-                        auto weightFileBlack = weightCfg->get_as<std::string>("weight_file_black");
-                        auto weightFileWhite = weightCfg->get_as<std::string>("weight_file_white");
-
-                        blackWeightPath = Command::getModelFullPath(u8path(*weightFileBlack));
-                        whiteWeightPath = Command::getModelFullPath(u8path(*weightFileWhite));
-                        if (!weightFileBlack || !weightFileWhite)
-                            throw std::runtime_error(
-                                "must specify weight_file or weight_file_black "
-                                "and weight_file_white in weight configs.");
-                    }
-                    else {
-                        blackWeightPath = weightPath;
-                        whiteWeightPath = weightPath;
-                    }
-
-                    try {
-                        return maker(boardSize,
-                                     rule,
-                                     numaId,
-                                     weightPath,
-                                     std::make_pair(blackWeightPath, whiteWeightPath),
-                                     *weightCfg);
-                    }
-                    catch (const Evaluation::UnsupportedRuleError &e) {
-                    }
-                    catch (const Evaluation::UnsupportedBoardSizeError &e) {
-                    }
-                    catch (const std::exception &e) {
-                        if (GeneralCfg.messageMode != MsgMode::NONE)
-                            MESSAGEL("Failed to load from "
-                                     << (!weightPath.empty()
-                                             ? pathToConsoleString(weightPath)
-                                             : pathToConsoleString(blackWeightPath) + " and "
-                                                   + pathToConsoleString(whiteWeightPath))
-                                     << " due to error: " << e.what());
-                    }
-                }
-
-                if (GeneralCfg.messageMode != MsgMode::NONE)
-                    MESSAGEL("Evaluator " << evaluatorName
-                                          << " disabled: no compatible weight config found.");
-                return nullptr;
-            }
-            catch (const std::exception &e) {
-                ERRORL("Evaluator " << evaluatorName << " failed to initialized: " << e.what());
-                return nullptr;
-            }
-        };
-    };
-
-    if (*evaluatorType == "mix9svq") {
-        Search::Engine.setupEvaluator(warpEvaluatorMaker(
-            [=](int                   boardSize,
-                Rule                  rule,
-                Numa::NumaNodeId      numaId,
-                path                  weightPath,
-                std::pair<path, path> blackAndWhiteWeightPath,
-                const cpptoml::table &weightCfg) {
-                return std::make_unique<Evaluation::mix9svq::Evaluator>(
-                    boardSize,
-                    rule,
-                    numaId,
-                    blackAndWhiteWeightPath.first,
-                    blackAndWhiteWeightPath.second);
-            },
-            true));
+    Evaluation::EvaluatorWeightsConfig weightsCfg;
+    weightsCfg.type      = *evaluatorType;
+    weightsCfg.ortDevice = t.get_as<std::string>("ort_device").value_or("");
+    for (auto weightCfg : *weights) {
+        Evaluation::EvaluatorWeightsConfig::WeightFiles wf;
+        if (auto v = weightCfg->get_as<std::string>("weight_file"))
+            wf.file = *v;
+        if (auto v = weightCfg->get_as<std::string>("weight_file_black"))
+            wf.fileBlack = *v;
+        if (auto v = weightCfg->get_as<std::string>("weight_file_white"))
+            wf.fileWhite = *v;
+        weightsCfg.weights.push_back(std::move(wf));
     }
-    else if (*evaluatorType == "mix10") {
-        Search::Engine.setupEvaluator(warpEvaluatorMaker(
-            [=](int                   boardSize,
-                Rule                  rule,
-                Numa::NumaNodeId      numaId,
-                path                  weightPath,
-                std::pair<path, path> blackAndWhiteWeightPath,
-                const cpptoml::table &weightCfg) {
-                return std::make_unique<Evaluation::mix10::Evaluator>(
-                    boardSize,
-                    rule,
-                    numaId,
-                    blackAndWhiteWeightPath.first,
-                    blackAndWhiteWeightPath.second);
-            },
-            true));
-    }
-#ifdef USE_ORT_EVALUATOR
-    else if (*evaluatorType == "ort") {
-        std::string deviceName = t.get_as<std::string>("ort_device").value_or("");
 
-        Search::Engine.setupEvaluator(warpEvaluatorMaker(
-            [=](int                   boardSize,
-                Rule                  rule,
-                Numa::NumaNodeId      numaId,
-                path                  weightPath,
-                std::pair<path, path> blackAndWhiteWeightPath,
-                const cpptoml::table &weightCfg) {
-                return std::make_unique<Evaluation::onnx::OnnxEvaluator>(boardSize,
-                                                                         rule,
-                                                                         weightPath,
-                                                                         deviceName);
-            },
-            false));
-    }
-#endif
-    else {
-        throw std::runtime_error("unsupported evaluator type " + *evaluatorType);
-    }
+    Search::Engine.setupEvaluator(
+        Evaluation::makeEvaluatorMaker(std::move(weightsCfg), Command::getModelFullPath));
 
     // Read classical/evaluator switching margin
     auto &evalCfg               = Evaluation::EvalCfg;

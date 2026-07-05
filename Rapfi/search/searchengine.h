@@ -19,6 +19,7 @@
 #pragma once
 
 #include "../core/platform.h"
+#include "../eval/evalconfig.h"
 #include "searchcommon.h"
 #include "searchoutput.h"
 #include "timecontrol.h"
@@ -128,9 +129,7 @@ class SearchEngine
 {
 public:
     /// Type of the function that creates an evaluator instance.
-    using EvaluatorMaker = std::unique_ptr<Evaluation::Evaluator>(int              boardSize,
-                                                                  Rule             rule,
-                                                                  Numa::NumaNodeId numaId);
+    using EvaluatorMaker = Evaluation::EvaluatorMakerFunc;
 
 private:
     friend class SearchThread;
@@ -148,7 +147,7 @@ private:
 
     std::vector<std::unique_ptr<SearchThread>> threads_;
     std::atomic_bool                           terminate;
-    std::function<EvaluatorMaker>              evaluatorMaker;
+    EvaluatorMaker                             evaluatorMaker;
     std::unique_ptr<Searcher>                  searcherPtr;
     std::unique_ptr<Database::DBStorage>       dbStoragePtr;
 
@@ -173,7 +172,7 @@ public:
     ///     can be nullptr which means disable all usage of database.
     void setupDatabase(std::unique_ptr<Database::DBStorage> dbStorage);
     /// Setup evaluator maker for future evaluator creation.
-    void setupEvaluator(std::function<EvaluatorMaker> evaluatorMaker);
+    void setupEvaluator(EvaluatorMaker evaluatorMaker);
     /// Run a custom task on all threads and wait for them to finish.
     /// @param task The custom task to run in each thread.
     /// @param includeSelf If true, the task also runs in the calling thread

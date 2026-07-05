@@ -293,7 +293,7 @@ void SearchEngine::setupDatabase(std::unique_ptr<Database::DBStorage> dbStorage)
     dbStoragePtr = std::move(dbStorage);
 }
 
-void SearchEngine::setupEvaluator(std::function<EvaluatorMaker> maker)
+void SearchEngine::setupEvaluator(EvaluatorMaker maker)
 {
     if (!threads_.empty()) {
         waitForIdle();
