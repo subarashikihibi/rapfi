@@ -19,10 +19,7 @@
 #include "../config.h"
 #include "../core/iohelper.h"
 #include "../core/utils.h"
-#include "../database/dbclient.h"
 #include "../database/dbconfig.h"
-#include "../database/dbutils.h"
-#include "../database/yxdbstorage.h"
 #include "../eval/eval.h"
 #include "../eval/evalconfig.h"
 #include "../eval/evaluator.h"
@@ -36,6 +33,8 @@
 #include "command.h"
 #include "dbcommand.h"
 
+#include <algorithm>
+#include <atomic>
 #include <fstream>
 #include <iomanip>
 #include <iostream>

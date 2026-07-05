@@ -25,6 +25,7 @@
     #define CXXOPTS_NO_REGEX
     #include <cxxopts.hpp>
 #endif
+#include <algorithm>
 #include <cstdlib>
 #include <functional>
 #include <iostream>

@@ -243,8 +243,8 @@ set(HEADERS
     database/dbconfig.h
     database/dbstorage.h
     database/dbtypes.h
+    database/dbutils.h
     database/parallelwalk.h
-	database/dbutils.h
     database/renlib.h
     database/yxdbstorage.h
 
@@ -283,6 +283,7 @@ set(HEADERS
     search/opening.h
     search/searchcommon.h
     search/searchconfig.h
+    search/searchengine.h
     search/searcher.h
     search/searchoutput.h
     search/searchthread.h

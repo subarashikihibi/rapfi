@@ -27,6 +27,7 @@
 #include "../game/board.h"
 #include "../search/searchcommon.h"
 
+#include <cctype>
 #include <fstream>
 #include <functional>
 #include <iomanip>
@@ -525,7 +526,7 @@ void mergeDatabase(DBCommandContext &ctx)
     if (ctx.storage) {
         std::string dbPathUTF8 = databasePath.u8string();
         if (auto dbToMerge = Database::createDBStorage(Database::DatabaseCfg, dbPathUTF8)) {
-            size_t writeCount = mergeDatabase(*ctx.storage,
+            size_t writeCount = ::Database::mergeDatabase(*ctx.storage,
                                               *dbToMerge,
                                               Database::DatabaseCfg.search.overwriteRule);
             MESSAGEL("Merged " << writeCount << " out of " << dbToMerge->size()

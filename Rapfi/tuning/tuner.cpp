@@ -27,8 +27,10 @@
 #include "optimizer.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <future>
+#include <limits>
 #include <iomanip>
 #include <iterator>
 #include <mutex>

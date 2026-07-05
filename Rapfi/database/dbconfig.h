@@ -35,7 +35,8 @@ namespace Database {
 /// consumers read fields directly, and runtime mutation (the gomocup
 /// DATABASE_READONLY toggle, YXSETDATABASE) is plain field assignment.
 /// Search reads go through DatabaseSearchParams::captureFromConfig(), which
-/// snapshots the `search` sub-struct once per search.
+/// snapshots the search-gating knobs once per search (the overwrite biases
+/// are read live inside DBClient - see checkOverwrite's default overload).
 struct DatabaseConfig
 {
     // [database]

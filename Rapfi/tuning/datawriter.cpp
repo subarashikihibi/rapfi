@@ -28,6 +28,9 @@
 #include "../eval/scoretables.h"
 #include "../game/board.h"
 
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <filesystem>
