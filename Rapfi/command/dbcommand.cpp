@@ -85,13 +85,15 @@ void saveDatabase(DBCommandContext &ctx)
     }
 }
 
-// NOTE: dispatched without CheckBoardOK, yet the currentBoardSizeAndRule
-// filter dereferences ctx.board unconditionally - a null-board crash if
-// YXDBTOTXT arrives before the first board-allocating command. Pre-existing
-// behavior, kept as is (candidate D1 sibling: guard like libToDatabase).
 void databaseToTxt(DBCommandContext &ctx, bool currentBoardSizeAndRule)
 {
     auto txtPath = readPathFromInput(ctx.in);
+    // Dispatched without CheckBoardOK: the currentBoardSizeAndRule filter needs
+    // a board to define "current", so bail out quietly if none exists yet
+    // (previously a null-board crash if YXDBTOTXT arrived before the first
+    // board-allocating command).
+    if (currentBoardSizeAndRule && !ctx.board)
+        return;
     if (ctx.storage) {
         std::ofstream                                        txtout(txtPath);
         std::function<bool(const DBKey &, const DBRecord &)> filter = nullptr;
