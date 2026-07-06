@@ -63,10 +63,11 @@ struct DatabaseConfig
     } yixindb;
 
     /// Parse state, not a TOML knob: mirrors the legacy null-DatabaseMaker
-    /// sentinel. True only when the last readDatabase parse got through the
-    /// yixindb options without throwing; createDBStorage returns a silent
-    /// nullptr while false (a failed reload must not leave the protocol
-    /// factory live with stale or half-parsed options).
+    /// sentinel. True only when the last committed "[database]" parse got
+    /// through the yixindb options; createDBStorage returns a silent nullptr
+    /// while false. loadConfig publishes the parsed table atomically, so the
+    /// live value always pairs with a consistently committed type/url/yixindb
+    /// (a failed reload keeps the previous values, including this flag).
     bool factoryEnabled = false;
 
     // [database.libfile]

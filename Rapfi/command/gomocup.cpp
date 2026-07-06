@@ -106,14 +106,16 @@ void think(Board                             &board,
     options.swapable            = swapable;
     options.disableOpeningQuery = disableOpeningQuery;
 
-    if (Config::GeneralCfg.reloadConfigEachMove)
-        loadConfig();
-
-    // If threads are pondering, stop them now and wait for them to finish
+    // If threads are pondering, stop them now and wait for them to finish.
+    // This must precede the config reload below: loadConfig quiesces the
+    // search threads without signaling them to stop.
     if (Search::Engine.ctx.inPonder) {
         Search::Engine.stopThinking();
         Search::Engine.waitForIdle();
     }
+
+    if (Config::GeneralCfg.reloadConfigEachMove)
+        loadConfig();
 
     thinking = true;
     Search::Engine.startThinking(board, options, false, [&, startTime = now()]() {

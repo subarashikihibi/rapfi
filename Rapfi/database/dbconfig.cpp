@@ -43,28 +43,20 @@ std::unique_ptr<DBStorage> openDBStorage(const DatabaseConfig &cfg, std::string 
 
 std::unique_ptr<DBStorage> createDBStorage(const DatabaseConfig &cfg, std::string utf8URL)
 {
-    // Silent nullptr reproduces the old null-DatabaseMaker sentinel exactly: a
-    // maker existed iff the last parse got through the yixindb options. Empty
-    // type, unknown-type leftovers from a failed parse (readDatabase throws
-    // AFTER storing type), and a parse that threw mid-[database] must all stay
-    // silent here.
+    // Silent nullptr reproduces the old null-DatabaseMaker sentinel: a maker
+    // exists iff the last committed config load got through the yixindb
+    // options. loadConfig publishes the parsed [database] table atomically,
+    // so a true factoryEnabled always pairs with type == "yixindb" - no
+    // half-parsed state can reach this factory.
     if (!cfg.factoryEnabled)
         return nullptr;
 
-    // The old maker was a self-contained yixindb closure: a failed reload may
-    // have overwritten cfg.type before throwing, yet the live factory kept
-    // opening yixindb with the last-committed options. Force the type so the
-    // core's dispatch cannot see that transient state (its unknown-type throw
-    // stays CLI-only reachable).
-    DatabaseConfig liveCfg = cfg;
-    liveCfg.type           = "yixindb";
-
     try {
-        auto dbPath    = std::filesystem::u8path(utf8URL.empty() ? liveCfg.url : utf8URL);
+        auto dbPath    = std::filesystem::u8path(utf8URL.empty() ? cfg.url : utf8URL);
         bool existing  = std::filesystem::exists(dbPath);
         auto startTime = now();
         MESSAGEL("Opening yixin database at " << pathToConsoleString(dbPath) << " ...");
-        auto dbStorage = openDBStorage(liveCfg, std::move(utf8URL));
+        auto dbStorage = openDBStorage(cfg, std::move(utf8URL));
         if (existing)
             MESSAGEL("Loaded Yixin database (" << dbStorage->size() << " records) using "
                                                << (now() - startTime) << " ms.");

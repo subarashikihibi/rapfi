@@ -33,6 +33,7 @@
 #include <cpptoml.h>
 #include <fstream>
 #include <limits>
+#include <optional>
 #ifdef MULTI_THREADING
     #include <thread>
 #endif
@@ -76,12 +77,41 @@ GeneralConfig GeneralCfg;
 
 // -------------------------------------------------
 
+/// PendingConfig stages one loadConfig pass. The struct copies are seeded
+/// from the live globals so that absent keys inherit the current values and
+/// present keys override them, exactly as the old in-place writes did; the
+/// remaining members record the engine effects requested by the parsed keys.
+/// Nothing is published until loadConfig's commit step.
+struct PendingConfig
+{
+    GeneralConfig               general  = GeneralCfg;
+    Search::SearchConfig        search   = Search::SearchCfg;
+    Search::TimeConfig          time     = Search::TimeCfg;
+    Database::DatabaseConfig    database = Database::DatabaseCfg;
+    Evaluation::EvaluatorConfig eval     = Evaluation::EvalCfg;
+
+    /// "[search] default_searcher" was present: switch the searcher at commit.
+    std::optional<std::string> searcherName;
+    /// "[general]" was present with a nonzero (inherited or new)
+    /// default_tt_size_kb: resize the TT at commit.
+    bool applyTTSize = false;
+    /// "[database]" was present with enable_by_default resolved true: attach
+    /// a storage at commit.
+    bool attachDatabase = false;
+    /// "[model.evaluator]" parsed a valid type + weights: the maker to install
+    /// at commit. Left null otherwise, so the commit resets to classical eval
+    /// (mirroring the old reset-then-maybe-install sequence).
+    Evaluation::EvaluatorMakerFunc evaluatorMaker;
+    /// Evaluator type name for the commit-time "Evaluator set to" message.
+    std::string evaluatorName;
+};
+
 void readRequirement(const cpptoml::table &t);
-void readGeneral(const cpptoml::table &t);
-void readSearch(const cpptoml::table &t);
-void readModel(const cpptoml::table &t);
-void readEvaluator(const cpptoml::table &t);
-void readDatabase(const cpptoml::table &t);
+void readGeneral(const cpptoml::table &t, PendingConfig &pending);
+void readSearch(const cpptoml::table &t, PendingConfig &pending);
+void readModel(const cpptoml::table &t, PendingConfig &pending);
+void readEvaluator(const cpptoml::table &t, PendingConfig &pending);
+void readDatabase(const cpptoml::table &t, PendingConfig &pending);
 template <typename ValueType,
           ValueType MinVal    = std::numeric_limits<ValueType>::lowest(),
           ValueType MaxVal    = std::numeric_limits<ValueType>::max(),
@@ -90,21 +120,29 @@ void readValueModel(const cpptoml::table &t, SetterType setter);
 
 }  // namespace Config
 
-/// Load config from a stream.
+/// Load config from a stream, transactionally.
 ///
-/// Besides filling the module config structs (GeneralCfg, Search::SearchCfg/
-/// TimeCfg, Database::DatabaseCfg, Evaluation::EvalCfg), the readers carry
-/// engine side effects, applied as keys are parsed: readGeneral resizes the TT
-/// (default_tt_size_kb) and normalizes default_thread_num = 0; readSearch
-/// switches the searcher (default_searcher); readDatabase attaches the
-/// database (enable_by_default); readEvaluator installs the evaluator maker.
-/// loadConfig starts by resetting the evaluator maker and database.
+/// The readers parse the whole document into a staged PendingConfig (building
+/// the one fallible resource, the evaluator maker, along the way); only after
+/// everything parsed does the commit step publish the structs to the live
+/// globals and apply the engine effects: searcher switch (default_searcher),
+/// TT resize (default_tt_size_kb), database attach (enable_by_default),
+/// evaluator maker install. A load that fails in any way leaves the previous
+/// configuration and engine state fully intact. The one exception is the
+/// classical model surface written by readModel (EVALS / P4SCORES /
+/// ScalingFactor, and binary_file via loadModelFromFile): those tables are
+/// still written in place during parse.
 /// @param configStream A input stream that contains a config file.
 /// @return Returns true if loading succeeded, otherwise returns false.
 bool Config::loadConfig(std::istream &configStream)
 {
-    Search::Engine.setupEvaluator(nullptr);
-    Search::Engine.setupDatabase(nullptr);
+    // Callers signal stopThinking() but do not wait, so quiesce the search
+    // threads before touching any state they read: the classical model tables
+    // are written in place during parse, and the commit publishes the config
+    // structs that search reads directly.
+    Search::Engine.waitForIdle();
+
+    PendingConfig pending;
 
     try {
         auto c = cpptoml::parser(configStream).parse();
@@ -113,21 +151,46 @@ bool Config::loadConfig(std::istream &configStream)
             readRequirement(*requirement);
 
         if (auto general = c->get_table("general"))
-            readGeneral(*general);
+            readGeneral(*general, pending);
 
         if (auto search = c->get_table("search"))
-            readSearch(*search);
+            readSearch(*search, pending);
 
         if (auto database = c->get_table("database"))
-            readDatabase(*database);
+            readDatabase(*database, pending);
 
         if (auto model = c->get_table("model"))
-            readModel(*model);
+            readModel(*model, pending);
     }
     catch (const std::exception &e) {
         ERRORL("Failed to load config: " << e.what());
         return false;
     }
+
+    // Commit: publish the parsed structs, then apply the engine effects.
+    GeneralCfg            = pending.general;
+    Search::SearchCfg     = pending.search;
+    Search::TimeCfg       = pending.time;
+    Database::DatabaseCfg = pending.database;
+    Evaluation::EvalCfg   = pending.eval;
+
+    // The searcher switch precedes the TT resize: setupSearcher carries the
+    // old searcher's memory limit onto the new one, and the resize then
+    // overrides it - the same end state the old resize-then-switch produced.
+    if (pending.searcherName)
+        Search::Engine.setupSearcher(::Search::createSearcher(*pending.searcherName));
+    if (pending.applyTTSize)
+        Search::Engine.searcher()->setMemoryLimit(GeneralCfg.defaultTTSizeKB);
+    // Detach (and thereby flush) any previous database before creating the
+    // new storage: YXDBStorage reads the file on construction, and dirty
+    // thread DBClients write back into the old storage only when it detaches,
+    // so a same-path reload must not open the file ahead of that flush.
+    Search::Engine.setupDatabase(nullptr);
+    if (pending.attachDatabase)
+        Search::Engine.setupDatabase(Database::createDBStorage(Database::DatabaseCfg));
+    Search::Engine.setupEvaluator(std::move(pending.evaluatorMaker));
+    if (!pending.evaluatorName.empty())
+        MESSAGEL("Evaluator set to " << pending.evaluatorName << ".");
 
     return true;
 }
@@ -155,22 +218,23 @@ void Config::readRequirement(const cpptoml::table &t)
 }
 
 /// Read general table of the config.
-void Config::readGeneral(const cpptoml::table &t)
+void Config::readGeneral(const cpptoml::table &t, PendingConfig &pending)
 {
-    GeneralCfg.reloadConfigEachMove =
-        t.get_as<bool>("reload_config_each_move").value_or(GeneralCfg.reloadConfigEachMove);
-    GeneralCfg.clearHashAfterConfigLoaded = t.get_as<bool>("clear_hash_after_config_loaded")
-                                                .value_or(GeneralCfg.clearHashAfterConfigLoaded);
+    auto &cfg = pending.general;
+
+    cfg.reloadConfigEachMove =
+        t.get_as<bool>("reload_config_each_move").value_or(cfg.reloadConfigEachMove);
+    cfg.clearHashAfterConfigLoaded =
+        t.get_as<bool>("clear_hash_after_config_loaded").value_or(cfg.clearHashAfterConfigLoaded);
 
     // Read Default Thread Num
-    GeneralCfg.defaultThreadNum =
-        t.get_as<uint64_t>("default_thread_num").value_or(GeneralCfg.defaultThreadNum);
-    if (GeneralCfg.defaultThreadNum == 0) {
+    cfg.defaultThreadNum = t.get_as<uint64_t>("default_thread_num").value_or(cfg.defaultThreadNum);
+    if (cfg.defaultThreadNum == 0) {
 #ifdef MULTI_THREADING
-        GeneralCfg.defaultThreadNum = std::thread::hardware_concurrency();
-        MESSAGEL("Setting default thread num to " << GeneralCfg.defaultThreadNum << ".");
+        cfg.defaultThreadNum = std::thread::hardware_concurrency();
+        MESSAGEL("Setting default thread num to " << cfg.defaultThreadNum << ".");
 #else
-        GeneralCfg.defaultThreadNum = 1;
+        cfg.defaultThreadNum = 1;
 #endif
     }
 
@@ -178,15 +242,15 @@ void Config::readGeneral(const cpptoml::table &t)
     if (t.get_as<std::string>("message_mode")) {
         std::string msgModeStr = *t.get_as<std::string>("message_mode");
         if (msgModeStr == "normal")
-            GeneralCfg.messageMode = MsgMode::NORMAL;
+            cfg.messageMode = MsgMode::NORMAL;
         else if (msgModeStr == "brief")
-            GeneralCfg.messageMode = MsgMode::BRIEF;
+            cfg.messageMode = MsgMode::BRIEF;
         else if (msgModeStr == "ucilike")
-            GeneralCfg.messageMode = MsgMode::UCILIKE;
+            cfg.messageMode = MsgMode::UCILIKE;
         else {
             if (msgModeStr != "none")
                 MESSAGEL("Warning: unknown message mode [" << msgModeStr << "], reset to [none].");
-            GeneralCfg.messageMode = MsgMode::NONE;
+            cfg.messageMode = MsgMode::NONE;
         }
     }
 
@@ -194,14 +258,14 @@ void Config::readGeneral(const cpptoml::table &t)
     if (t.get_as<std::string>("coord_conversion_mode")) {
         std::string coordModeStr = *t.get_as<std::string>("coord_conversion_mode");
         if (coordModeStr == "X_flipY")
-            GeneralCfg.ioCoordMode = CoordConvertionMode::X_FLIPY;
+            cfg.ioCoordMode = CoordConvertionMode::X_FLIPY;
         else if (coordModeStr == "flipY_X")
-            GeneralCfg.ioCoordMode = CoordConvertionMode::FLIPY_X;
+            cfg.ioCoordMode = CoordConvertionMode::FLIPY_X;
         else {
             if (coordModeStr != "none")
                 MESSAGEL("Warning: unknown coordinate conversion mode [" << coordModeStr
                                                                          << "], reset to [none].");
-            GeneralCfg.ioCoordMode = CoordConvertionMode::NONE;
+            cfg.ioCoordMode = CoordConvertionMode::NONE;
         }
     }
 
@@ -209,21 +273,21 @@ void Config::readGeneral(const cpptoml::table &t)
     if (t.get_as<std::string>("default_candidate_range")) {
         std::string candRangeModeStr = *t.get_as<std::string>("default_candidate_range");
         if (candRangeModeStr == "square2")
-            GeneralCfg.defaultCandidateRange = CandidateRange::SQUARE2;
+            cfg.defaultCandidateRange = CandidateRange::SQUARE2;
         else if (candRangeModeStr == "square2_line3")
-            GeneralCfg.defaultCandidateRange = CandidateRange::SQUARE2_LINE3;
+            cfg.defaultCandidateRange = CandidateRange::SQUARE2_LINE3;
         else if (candRangeModeStr == "square3")
-            GeneralCfg.defaultCandidateRange = CandidateRange::SQUARE3;
+            cfg.defaultCandidateRange = CandidateRange::SQUARE3;
         else if (candRangeModeStr == "square3_line4")
-            GeneralCfg.defaultCandidateRange = CandidateRange::SQUARE3_LINE4;
+            cfg.defaultCandidateRange = CandidateRange::SQUARE3_LINE4;
         else if (candRangeModeStr == "square4")
-            GeneralCfg.defaultCandidateRange = CandidateRange::SQUARE4;
+            cfg.defaultCandidateRange = CandidateRange::SQUARE4;
         else if (candRangeModeStr == "full_board")
-            GeneralCfg.defaultCandidateRange = CandidateRange::FULL_BOARD;
+            cfg.defaultCandidateRange = CandidateRange::FULL_BOARD;
         else {
             MESSAGEL("Warning: unknown candidate range [" << candRangeModeStr
                                                           << "], reset to [square2_line3].");
-            GeneralCfg.defaultCandidateRange = CandidateRange::SQUARE2_LINE3;
+            cfg.defaultCandidateRange = CandidateRange::SQUARE2_LINE3;
         }
     }
 
@@ -231,98 +295,94 @@ void Config::readGeneral(const cpptoml::table &t)
     if (auto table = t.get_array("memory_reserved_mb")) {
         if (auto array = table->get_array_of<int64_t>()) {
             for (int i = 0; i < RULE_NB; i++)
-                GeneralCfg.memoryReservedMB[i] = array->at(std::min<size_t>(i, array->size() - 1));
+                cfg.memoryReservedMB[i] = array->at(std::min<size_t>(i, array->size() - 1));
         }
     }
     else {
         auto v = t.get_as<uint64_t>("memory_reserved_mb");
         for (int i = 0; i < RULE_NB; i++)
-            GeneralCfg.memoryReservedMB[i] = v.value_or(GeneralCfg.memoryReservedMB[i]);
+            cfg.memoryReservedMB[i] = v.value_or(cfg.memoryReservedMB[i]);
     }
 
-    GeneralCfg.defaultTTSizeKB =
-        t.get_as<uint64_t>("default_tt_size_kb").value_or(GeneralCfg.defaultTTSizeKB);
-    // Resize TT according to default TT size (overriding previous size)
-    if (GeneralCfg.defaultTTSizeKB > 0)
-        Search::Engine.searcher()->setMemoryLimit(GeneralCfg.defaultTTSizeKB);
+    cfg.defaultTTSizeKB = t.get_as<uint64_t>("default_tt_size_kb").value_or(cfg.defaultTTSizeKB);
+    // Request a TT resize at commit according to default TT size (overriding previous size)
+    pending.applyTTSize = cfg.defaultTTSizeKB > 0;
 }
 
 /// Read search table of the config.
-void Config::readSearch(const cpptoml::table &t)
+void Config::readSearch(const cpptoml::table &t, PendingConfig &pending)
 {
     if (auto v = t.get_as<std::string>("default_searcher"); v)
-        Search::Engine.setupSearcher(::Search::createSearcher(*v));
+        pending.searcherName = *v;
 
-    using Search::SearchCfg, Search::TimeCfg;
+    auto &cfg     = pending.search;
+    auto &timeCfg = pending.time;
 
     // Parameters for alpha-beta search
-    SearchCfg.aspirationWindow =
-        t.get_as<bool>("aspiration_window").value_or(SearchCfg.aspirationWindow);
-    SearchCfg.filterSymmetryRootMoves =
-        t.get_as<bool>("filter_symmetry_root_moves").value_or(SearchCfg.filterSymmetryRootMoves);
-    SearchCfg.numIterationAfterMate =
-        t.get_as<int>("num_iteration_after_mate").value_or(SearchCfg.numIterationAfterMate);
-    SearchCfg.numIterationAfterSingularRoot =
-        t.get_as<int>("num_iteration_after_singular_root")
-            .value_or(SearchCfg.numIterationAfterSingularRoot);
-    SearchCfg.maxSearchDepth =
-        t.get_as<int>("max_search_depth").value_or(SearchCfg.maxSearchDepth);
+    cfg.aspirationWindow = t.get_as<bool>("aspiration_window").value_or(cfg.aspirationWindow);
+    cfg.filterSymmetryRootMoves =
+        t.get_as<bool>("filter_symmetry_root_moves").value_or(cfg.filterSymmetryRootMoves);
+    cfg.numIterationAfterMate =
+        t.get_as<int>("num_iteration_after_mate").value_or(cfg.numIterationAfterMate);
+    cfg.numIterationAfterSingularRoot = t.get_as<int>("num_iteration_after_singular_root")
+                                            .value_or(cfg.numIterationAfterSingularRoot);
+    cfg.maxSearchDepth = t.get_as<int>("max_search_depth").value_or(cfg.maxSearchDepth);
 
     // Parameters for MCTS search
-    SearchCfg.expandWhenFirstEvaluate =
-        t.get_as<bool>("expand_when_first_evaluate").value_or(SearchCfg.expandWhenFirstEvaluate);
-    SearchCfg.maxNumVisitsPerPlayout =
-        t.get_as<int>("max_num_visits_per_playout").value_or(SearchCfg.maxNumVisitsPerPlayout);
-    SearchCfg.nodesToPrintMCTSRootmoves = t.get_as<int>("nodes_to_print_mcts_rootmoves")
-                                              .value_or(SearchCfg.nodesToPrintMCTSRootmoves);
-    SearchCfg.timeToPrintMCTSRootmoves =
-        t.get_as<int>("time_to_print_mcts_rootmoves").value_or(SearchCfg.timeToPrintMCTSRootmoves);
-    SearchCfg.maxNonPVRootmovesToPrint = t.get_as<int>("max_non_pv_rootmoves_to_print")
-                                             .value_or(SearchCfg.maxNonPVRootmovesToPrint);
-    SearchCfg.numNodesAfterSingularRoot = t.get_as<int>("num_nodes_after_singular_root")
-                                              .value_or(SearchCfg.numNodesAfterSingularRoot);
-    SearchCfg.numNodeTableShardsPowerOfTwo =
-        t.get_as<int>("num_node_table_shards_power_of_two")
-            .value_or(SearchCfg.numNodeTableShardsPowerOfTwo);
-    SearchCfg.drawUtilityPenalty =
-        t.get_as<double>("draw_utility_penalty").value_or(SearchCfg.drawUtilityPenalty);
+    cfg.expandWhenFirstEvaluate =
+        t.get_as<bool>("expand_when_first_evaluate").value_or(cfg.expandWhenFirstEvaluate);
+    cfg.maxNumVisitsPerPlayout =
+        t.get_as<int>("max_num_visits_per_playout").value_or(cfg.maxNumVisitsPerPlayout);
+    cfg.nodesToPrintMCTSRootmoves =
+        t.get_as<int>("nodes_to_print_mcts_rootmoves").value_or(cfg.nodesToPrintMCTSRootmoves);
+    cfg.timeToPrintMCTSRootmoves =
+        t.get_as<int>("time_to_print_mcts_rootmoves").value_or(cfg.timeToPrintMCTSRootmoves);
+    cfg.maxNonPVRootmovesToPrint =
+        t.get_as<int>("max_non_pv_rootmoves_to_print").value_or(cfg.maxNonPVRootmovesToPrint);
+    cfg.numNodesAfterSingularRoot =
+        t.get_as<int>("num_nodes_after_singular_root").value_or(cfg.numNodesAfterSingularRoot);
+    cfg.numNodeTableShardsPowerOfTwo = t.get_as<int>("num_node_table_shards_power_of_two")
+                                           .value_or(cfg.numNodeTableShardsPowerOfTwo);
+    cfg.drawUtilityPenalty =
+        t.get_as<double>("draw_utility_penalty").value_or(cfg.drawUtilityPenalty);
 
     // Read time management options
     if (auto tm = t.get_table("timectl")) {
-        TimeCfg.turnTimeReserved =
-            tm->get_as<int>("turn_time_reserved").value_or(TimeCfg.turnTimeReserved);
-        TimeCfg.matchSpace = tm->get_as<double>("match_space").value_or(TimeCfg.matchSpace);
-        TimeCfg.matchSpaceMin =
-            tm->get_as<double>("match_space_min").value_or(TimeCfg.matchSpaceMin);
-        TimeCfg.averageBranchFactor =
-            tm->get_as<double>("average_branch_factor").value_or(TimeCfg.averageBranchFactor);
-        TimeCfg.advancedStopRatio =
-            tm->get_as<double>("advanced_stop_ratio").value_or(TimeCfg.advancedStopRatio);
-        TimeCfg.moveHorizon = tm->get_as<int>("move_horizon").value_or(TimeCfg.moveHorizon);
+        timeCfg.turnTimeReserved =
+            tm->get_as<int>("turn_time_reserved").value_or(timeCfg.turnTimeReserved);
+        timeCfg.matchSpace = tm->get_as<double>("match_space").value_or(timeCfg.matchSpace);
+        timeCfg.matchSpaceMin =
+            tm->get_as<double>("match_space_min").value_or(timeCfg.matchSpaceMin);
+        timeCfg.averageBranchFactor =
+            tm->get_as<double>("average_branch_factor").value_or(timeCfg.averageBranchFactor);
+        timeCfg.advancedStopRatio =
+            tm->get_as<double>("advanced_stop_ratio").value_or(timeCfg.advancedStopRatio);
+        timeCfg.moveHorizon = tm->get_as<int>("move_horizon").value_or(timeCfg.moveHorizon);
 
-        TimeCfg.timeDivisorScale =
-            tm->get_as<double>("time_divisor_scale").value_or(TimeCfg.timeDivisorScale);
-        TimeCfg.timeDivisorBias =
-            tm->get_as<double>("time_divisor_bias").value_or(TimeCfg.timeDivisorBias);
-        TimeCfg.timeDivisorDepthPow =
-            tm->get_as<double>("time_divisor_depth_pow").value_or(TimeCfg.timeDivisorDepthPow);
+        timeCfg.timeDivisorScale =
+            tm->get_as<double>("time_divisor_scale").value_or(timeCfg.timeDivisorScale);
+        timeCfg.timeDivisorBias =
+            tm->get_as<double>("time_divisor_bias").value_or(timeCfg.timeDivisorBias);
+        timeCfg.timeDivisorDepthPow =
+            tm->get_as<double>("time_divisor_depth_pow").value_or(timeCfg.timeDivisorDepthPow);
 
-        TimeCfg.fallingFactorScale =
-            tm->get_as<double>("falling_factor_scale").value_or(TimeCfg.fallingFactorScale);
-        TimeCfg.fallingFactorBias =
-            tm->get_as<double>("falling_factor_bias").value_or(TimeCfg.fallingFactorBias);
+        timeCfg.fallingFactorScale =
+            tm->get_as<double>("falling_factor_scale").value_or(timeCfg.fallingFactorScale);
+        timeCfg.fallingFactorBias =
+            tm->get_as<double>("falling_factor_bias").value_or(timeCfg.fallingFactorBias);
 
-        TimeCfg.bestmoveStableReductionScale =
+        timeCfg.bestmoveStableReductionScale =
             tm->get_as<double>("bestmove_stable_reduction_scale")
-                .value_or(TimeCfg.bestmoveStableReductionScale);
-        TimeCfg.bestmoveStablePrevReductionPow =
+                .value_or(timeCfg.bestmoveStableReductionScale);
+        timeCfg.bestmoveStablePrevReductionPow =
             tm->get_as<double>("bestmove_stable_prev_reduction_pow")
-                .value_or(TimeCfg.bestmoveStablePrevReductionPow);
+                .value_or(timeCfg.bestmoveStablePrevReductionPow);
     }
 }
 
-/// Read model table of all rules in the config.
-void Config::readModel(const cpptoml::table &t)
+/// Read model table of all rules in the config. The classical model tables
+/// (EVALS / P4SCORES / ScalingFactor) are written in place, not staged.
+void Config::readModel(const cpptoml::table &t, PendingConfig &pending)
 {
     const Rule  Rules[]    = {FREESTYLE, STANDARD, RENJU};
     const char *RuleName[] = {"freestyle", "standard", "renju"};
@@ -420,11 +480,11 @@ void Config::readModel(const cpptoml::table &t)
 
     // Read evaluator
     if (auto evaluator = t.get_table("evaluator"))
-        readEvaluator(*evaluator);
+        readEvaluator(*evaluator, pending);
 }
 
 /// Read evaluator table in the config.
-void Config::readEvaluator(const cpptoml::table &t)
+void Config::readEvaluator(const cpptoml::table &t, PendingConfig &pending)
 {
     auto evaluatorType = t.get_as<std::string>("type");
     auto weights       = t.get_table_array("weights");
@@ -445,11 +505,12 @@ void Config::readEvaluator(const cpptoml::table &t)
         weightsCfg.weights.push_back(std::move(wf));
     }
 
-    Search::Engine.setupEvaluator(
-        Evaluation::makeEvaluatorMaker(std::move(weightsCfg), Command::getModelFullPath));
+    pending.evaluatorMaker =
+        Evaluation::makeEvaluatorMaker(std::move(weightsCfg), Command::getModelFullPath);
+    pending.evaluatorName = *evaluatorType;
 
     // Read classical/evaluator switching margin
-    auto &evalCfg               = Evaluation::EvalCfg;
+    auto &evalCfg               = pending.eval;
     evalCfg.marginWinLossScale  = (float)t.get_as<double>("margin_winloss_scale")
                                      .value_or(evalCfg.marginWinLossScale);
     evalCfg.marginWinLossExponent =
@@ -460,49 +521,45 @@ void Config::readEvaluator(const cpptoml::table &t)
     evalCfg.drawRatio        = (float)t.get_as<double>("draw_ratio").value_or(evalCfg.drawRatio);
     evalCfg.drawBlackWinRate = std::clamp(evalCfg.drawBlackWinRate, 0.0f, 1.0f);
     evalCfg.drawRatio        = std::clamp(evalCfg.drawRatio, 0.0f, 1.0f);
-
-    MESSAGEL("Evaluator set to " << *evaluatorType << ".");
 }
 
 /// Read database table in the config.
-void Config::readDatabase(const cpptoml::table &t)
+void Config::readDatabase(const cpptoml::table &t, PendingConfig &pending)
 {
-    using Database::DatabaseCfg;
+    auto &cfg = pending.database;
 
-    DatabaseCfg.defaultEnabled =
-        t.get_as<bool>("enable_by_default").value_or(DatabaseCfg.defaultEnabled);
-    DatabaseCfg.type      = t.get_as<std::string>("type").value_or(DatabaseCfg.type);
-    DatabaseCfg.url       = t.get_as<std::string>("url").value_or(DatabaseCfg.url);
-    DatabaseCfg.cacheSize = t.get_as<size_t>("cache_size").value_or(DatabaseCfg.cacheSize);
-    DatabaseCfg.recordCacheSize =
-        t.get_as<size_t>("record_cache_size").value_or(DatabaseCfg.recordCacheSize);
-    DatabaseCfg.legacyFileCodePage =
-        t.get_as<int>("legacy_file_code_page").value_or(DatabaseCfg.legacyFileCodePage);
-    DatabaseCfg.factoryEnabled = false;
+    cfg.defaultEnabled  = t.get_as<bool>("enable_by_default").value_or(cfg.defaultEnabled);
+    cfg.type            = t.get_as<std::string>("type").value_or(cfg.type);
+    cfg.url             = t.get_as<std::string>("url").value_or(cfg.url);
+    cfg.cacheSize       = t.get_as<size_t>("cache_size").value_or(cfg.cacheSize);
+    cfg.recordCacheSize = t.get_as<size_t>("record_cache_size").value_or(cfg.recordCacheSize);
+    cfg.legacyFileCodePage =
+        t.get_as<int>("legacy_file_code_page").value_or(cfg.legacyFileCodePage);
+    cfg.factoryEnabled = false;
 
-    if (DatabaseCfg.type == "yixindb") {
-        if (DatabaseCfg.url.empty())
-            DatabaseCfg.url = "rapfi.db";
+    if (cfg.type == "yixindb") {
+        if (cfg.url.empty())
+            cfg.url = "rapfi.db";
 
-        DatabaseCfg.yixindb = {};
+        cfg.yixindb = {};
         if (auto args = t.get_table("yixindb")) {
-            DatabaseCfg.yixindb.compressedSave =
-                args->get_as<bool>("compressed_save").value_or(DatabaseCfg.yixindb.compressedSave);
-            DatabaseCfg.yixindb.saveOnClose =
-                args->get_as<bool>("save_on_close").value_or(DatabaseCfg.yixindb.saveOnClose);
-            DatabaseCfg.yixindb.numBackupsOnSave = args->get_as<int>("num_backups_on_save")
-                                                       .value_or(DatabaseCfg.yixindb.numBackupsOnSave);
-            DatabaseCfg.yixindb.ignoreCorrupted =
-                args->get_as<bool>("ignore_corrupted").value_or(DatabaseCfg.yixindb.ignoreCorrupted);
+            cfg.yixindb.compressedSave =
+                args->get_as<bool>("compressed_save").value_or(cfg.yixindb.compressedSave);
+            cfg.yixindb.saveOnClose =
+                args->get_as<bool>("save_on_close").value_or(cfg.yixindb.saveOnClose);
+            cfg.yixindb.numBackupsOnSave =
+                args->get_as<int>("num_backups_on_save").value_or(cfg.yixindb.numBackupsOnSave);
+            cfg.yixindb.ignoreCorrupted =
+                args->get_as<bool>("ignore_corrupted").value_or(cfg.yixindb.ignoreCorrupted);
         }
-        DatabaseCfg.factoryEnabled = true;
+        cfg.factoryEnabled = true;
     }
-    else if (!DatabaseCfg.type.empty()) {
-        throw std::runtime_error("unsupported database type " + DatabaseCfg.type);
+    else if (!cfg.type.empty()) {
+        throw std::runtime_error("unsupported database type " + cfg.type);
     }
 
     if (auto s = t.get_table("search")) {
-        auto &dbs        = DatabaseCfg.search;
+        auto &dbs        = cfg.search;
         dbs.readonlyMode = s->get_as<bool>("readonly_mode").value_or(false);
         dbs.mandatoryParentWrite = s->get_as<bool>("mandatory_parent_write").value_or(true);
         dbs.queryPly             = s->get_as<int>("query_ply").value_or(dbs.queryPly);
@@ -559,7 +616,7 @@ void Config::readDatabase(const cpptoml::table &t)
     }
 
     if (auto s = t.get_table("libfile")) {
-        auto &lib           = DatabaseCfg.libfile;
+        auto &lib           = cfg.libfile;
         lib.blackWinMark    = s->get_as<std::string>("black_win_mark").value_or("a")[0];
         lib.whiteWinMark    = s->get_as<std::string>("white_win_mark").value_or("a")[0];
         lib.blackLoseMark   = s->get_as<std::string>("black_lose_mark").value_or("c")[0];
@@ -568,8 +625,7 @@ void Config::readDatabase(const cpptoml::table &t)
         lib.ignoreBoardText = s->get_as<bool>("ignore_board_text").value_or(false);
     }
 
-    if (DatabaseCfg.defaultEnabled)
-        Search::Engine.setupDatabase(Database::createDBStorage(DatabaseCfg));
+    pending.attachDatabase = cfg.defaultEnabled;
 }
 
 /// Read a value model from a model table.
