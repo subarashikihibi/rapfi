@@ -29,6 +29,7 @@
 #include "searcher.h"
 
 #include <algorithm>
+#include <limits>
 
 using namespace Search;
 using namespace Search::MCTS;
@@ -969,9 +970,13 @@ void MCTSSearcher::setMemoryLimit(size_t memorySizeKB)
         graphMemoryLimit = 0;
     }
     else {
-        vcfTTSizeKB      = std::clamp<size_t>(memorySizeKB / vcfTTDivisor, 1, vcfTTMaxKB);
-        vcfTTSizeKB      = std::min(vcfTTSizeKB, memorySizeKB);
-        graphMemoryLimit = (memorySizeKB - vcfTTSizeKB) * 1024;
+        vcfTTSizeKB    = std::clamp<size_t>(memorySizeKB / vcfTTDivisor, 1, vcfTTMaxKB);
+        vcfTTSizeKB    = std::min(vcfTTSizeKB, memorySizeKB);
+        size_t graphKB = memorySizeKB - vcfTTSizeKB;
+        // Saturate instead of wrapping on absurd budgets (> 2^54 KiB)
+        graphMemoryLimit = graphKB <= std::numeric_limits<size_t>::max() / 1024
+                               ? graphKB * 1024
+                               : std::numeric_limits<size_t>::max();
     }
     TT.resize(vcfTTSizeKB);
 }
@@ -1135,8 +1140,14 @@ void MCTSSearcher::setupRootNode(SearchThread &th)
         rootPosition.push_back(move);
     }
 
+    // Recycling must run whenever the graph memory budget is exceeded -
+    // clear(false) keeps the table and the counter, so a new/backward/
+    // unchanged position must still be able to reclaim the budget below.
+    bool overBudget = memoryLimitKB
+                      && graphMemoryUsed.load(std::memory_order_relaxed) >= graphMemoryLimit;
+
     // If the root position has not changed, we do not need to update the root node
-    if (graph.root && rootPosition == graph.previousPosition)
+    if (graph.root && rootPosition == graph.previousPosition && !overBudget)
         return;
 
     SearchOptions &opts = th.options();
@@ -1150,11 +1161,12 @@ void MCTSSearcher::setupRootNode(SearchThread &th)
     assert(graph.root->getEdges()->numEdges > 0);
 
     // Garbage collect old nodes (only when we go forward, and not with
-    // singular root), or whenever the graph memory budget is exceeded -
-    // clear(false) keeps the table and the counter, so a new/backward
-    // position must still be able to reclaim the budget here.
-    bool overBudget = memoryLimitKB
-                      && graphMemoryUsed.load(std::memory_order_relaxed) >= graphMemoryLimit;
+    // singular root), or whenever the graph memory budget is exceeded.
+    // Re-sample the budget here: root setup above may have allocated the
+    // new root and its edges, crossing the limit after the first check.
+    overBudget = overBudget
+                 || (memoryLimitKB
+                     && graphMemoryUsed.load(std::memory_order_relaxed) >= graphMemoryLimit);
     if ((rootPosition.size() >= graph.previousPosition.size() && th.rootMoves.size() > 1)
         || overBudget)
         recycleOldNodes(th);
