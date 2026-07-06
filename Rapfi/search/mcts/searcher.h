@@ -75,6 +75,12 @@ public:
     /// is signalled by memoryLimitKB == 0, never by this field.
     size_t graphMemoryLimit = 0;
 
+    /// Estimated bytes of live graph memory (nodes + edge arrays +
+    /// per-allocation overhead constants). Updated at node insertion, edge
+    /// creation, and the recycle sweep; survives clear(false) together with
+    /// the node table contents; zeroed by clear(true).
+    std::atomic<size_t> graphMemoryUsed {0};
+
     MCTSSearcher();
     ~MCTSSearcher() = default;
 

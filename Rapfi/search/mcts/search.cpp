@@ -283,20 +283,22 @@ inline float puctSelectionValue(float    childUtility,
 }
 
 /// allocateOrFindNode: allocate a new node if it does not exist in the node table
-/// @param nodeTable The node table to allocate or find the node
+/// @param searcher The searcher owning the node table and the memory counter
 /// @param hash The hash key of the node
-/// @param globalNodeAge The global node age to synchronize the node table
 /// @return A pair of (the node pointer, whether the node is inserted by myself)
-std::pair<Node *, bool>
-allocateOrFindNode(NodeTable &nodeTable, HashKey hash, uint32_t globalNodeAge)
+std::pair<Node *, bool> allocateOrFindNode(MCTSSearcher &searcher, HashKey hash)
 {
     // Try to find a transposition node with the board's zobrist hash
-    Node *node         = nodeTable.findNode(hash);
+    Node *node         = searcher.nodeTable->findNode(hash);
     bool  didInsertion = false;
 
     // Allocate and insert a new child node if we do not find a transposition
-    if (!node)
-        std::tie(node, didInsertion) = nodeTable.tryEmplaceNode(hash, globalNodeAge);
+    if (!node) {
+        std::tie(node, didInsertion) =
+            searcher.nodeTable->tryEmplaceNode(hash, searcher.graph.globalNodeAge);
+        if (didInsertion)
+            searcher.graphMemoryUsed.fetch_add(nodeFootprint(), std::memory_order_relaxed);
+    }
 
     return {node, didInsertion};
 }
@@ -404,6 +406,8 @@ std::pair<Edge *, Node *> selectChild(Node &node, const Board &board)
 template <bool Root = false>
 bool expandNode(Node &node, const SearchOptions &options, const Board &board, int ply)
 {
+    MCTSSearcher &searcher = static_cast<MCTSSearcher &>(*board.thisThread()->engine.searcher());
+
     if constexpr (Root) {
         MovePicker mp(options.rule,
                       board,
@@ -411,7 +415,7 @@ bool expandNode(Node &node, const SearchOptions &options, const Board &board, in
                           true,
                           RootPolicyTemperature,
                       });
-        bool       noValidMove = node.createEdges(mp);
+        bool       noValidMove = node.createEdges(mp, &searcher.graphMemoryUsed);
         assert(!node.isLeaf());
         assert(!noValidMove);
         return false;
@@ -427,7 +431,7 @@ bool expandNode(Node &node, const SearchOptions &options, const Board &board, in
                           PolicyTemperature,
                       });
 
-        bool noValidMove = node.createEdges(mp);
+        bool noValidMove = node.createEdges(mp, &searcher.graphMemoryUsed);
         if (noValidMove) {
             Value terminalValue = board.p4Count(~board.sideToMove(), A_FIVE)
                                       ? mated_in(board.ply() + 2)
@@ -549,8 +553,7 @@ uint32_t searchNode(Node &node, Board &board, int ply, uint32_t newVisits)
         bool allocatedNode = false;
         if (!childNode) {
             HashKey hash = board.zobristKey();
-            std::tie(childNode, allocatedNode) =
-                allocateOrFindNode(*searcher.nodeTable, hash, searcher.graph.globalNodeAge);
+            std::tie(childNode, allocatedNode) = allocateOrFindNode(searcher, hash);
 
             // Remember this child node in the edge
             childEdge->setChild(childNode);
@@ -1000,6 +1003,7 @@ void MCTSSearcher::clear(SearchEngine &pool, bool clearAllMemory)
             true);
     });
     pool.waitForIdle();
+    graphMemoryUsed.store(0, std::memory_order_relaxed);
 
     // Reset node table num shards if needed
     if (nodeTable->getNumShards() != SearchCfg.numNodeTableShardsPowerOfTwo)
@@ -1052,6 +1056,11 @@ void MCTSSearcher::search(SearchThread &th)
     // Main search loop
     std::vector<Node *> selectedPath;
     while (!th.engine.isTerminating()) {
+        // Stop when the graph memory budget is exhausted
+        if (memoryLimitKB
+            && graphMemoryUsed.load(std::memory_order_relaxed) >= graphMemoryLimit)
+            break;
+
         uint32_t newNumPlayouts = SearchCfg.maxNumVisitsPerPlayout;
 
         // Cap new number of playouts to the maximum num nodes to visit
@@ -1133,16 +1142,21 @@ void MCTSSearcher::setupRootNode(SearchThread &th)
     SearchOptions &opts = th.options();
 
     // Initialize the root node to expanded state
-    std::tie(graph.root, std::ignore) =
-        allocateOrFindNode(*nodeTable, th.board->zobristKey(), graph.globalNodeAge);
+    std::tie(graph.root, std::ignore) = allocateOrFindNode(*this, th.board->zobristKey());
     if (graph.root->getVisits() == 0)
         evaluateNode<true>(*graph.root, opts, *th.board, 0);
     if (graph.root->isLeaf())
         expandNode<true>(*graph.root, opts, *th.board, 0);
     assert(graph.root->getEdges()->numEdges > 0);
 
-    // Garbage collect old nodes (only when we go forward, and not with singular root)
-    if (rootPosition.size() >= graph.previousPosition.size() && th.rootMoves.size() > 1)
+    // Garbage collect old nodes (only when we go forward, and not with
+    // singular root), or whenever the graph memory budget is exceeded -
+    // clear(false) keeps the table and the counter, so a new/backward
+    // position must still be able to reclaim the budget here.
+    bool overBudget = memoryLimitKB
+                      && graphMemoryUsed.load(std::memory_order_relaxed) >= graphMemoryLimit;
+    if ((rootPosition.size() >= graph.previousPosition.size() && th.rootMoves.size() > 1)
+        || overBudget)
         recycleOldNodes(th);
 
     // Update previous Position
@@ -1185,6 +1199,11 @@ void MCTSSearcher::recycleOldNodes(SearchThread &th)
                         Node *node = std::addressof(const_cast<Node &>(*it));
                         if (node->getAgeRef().load(std::memory_order_relaxed)
                             != this->graph.globalNodeAge) {
+                            size_t footprint = nodeFootprint();
+                            if (const EdgeArray *edges = node->getEdges())
+                                footprint += edgeArrayFootprint(edges->numEdges);
+                            this->graphMemoryUsed.fetch_sub(footprint,
+                                                            std::memory_order_relaxed);
                             it = shard.table.erase(it);
                             numRecycledNodes.fetch_add(1, std::memory_order_relaxed);
                         }
