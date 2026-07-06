@@ -65,6 +65,16 @@ public:
         Time lastOutputTime;
     } scratch;
 
+    /// Total requested MCTS search-memory budget in KiB, as passed to
+    /// setMemoryLimit (0 = no budget set: graph unbounded, VCF TT at its
+    /// default maximum). Written only between searches, like TT resizing.
+    size_t memoryLimitKB = 0;
+
+    /// Graph memory budget in bytes, derived from memoryLimitKB by
+    /// setMemoryLimit. May legitimately be zero (tiny budgets); "unbounded"
+    /// is signalled by memoryLimitKB == 0, never by this field.
+    size_t graphMemoryLimit = 0;
+
     MCTSSearcher();
     ~MCTSSearcher() = default;
 

@@ -952,12 +952,30 @@ MCTSSearcher::MCTSSearcher() : Searcher(false)
 
 void MCTSSearcher::setMemoryLimit(size_t memorySizeKB)
 {
-    TT.resize(8192);
+    // The argument is the total MCTS search-memory budget: a small capped
+    // slice goes to the (shared) VCF TT, the rest becomes the graph budget.
+    size_t vcfTTMaxKB   = static_cast<size_t>(std::max(SearchCfg.mctsVCFTTMaxSizeKB, 1));
+    size_t vcfTTDivisor = static_cast<size_t>(std::max(SearchCfg.mctsVCFTTBudgetDivisor, 1));
+
+    memoryLimitKB = memorySizeKB;
+    size_t vcfTTSizeKB;
+    if (memorySizeKB == 0) {
+        // No budget set: graph unbounded (keyed off memoryLimitKB == 0),
+        // VCF TT at its default maximum.
+        vcfTTSizeKB      = vcfTTMaxKB;
+        graphMemoryLimit = 0;
+    }
+    else {
+        vcfTTSizeKB      = std::clamp<size_t>(memorySizeKB / vcfTTDivisor, 1, vcfTTMaxKB);
+        vcfTTSizeKB      = std::min(vcfTTSizeKB, memorySizeKB);
+        graphMemoryLimit = (memorySizeKB - vcfTTSizeKB) * 1024;
+    }
+    TT.resize(vcfTTSizeKB);
 }
 
 size_t MCTSSearcher::getMemoryLimit() const
 {
-    return TT.hashSizeKB();
+    return memoryLimitKB;
 }
 
 void MCTSSearcher::clear(SearchEngine &pool, bool clearAllMemory)
