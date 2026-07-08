@@ -95,50 +95,11 @@ struct StateInfo
     }
 };
 
-/// All per-cell state the engine maintains: the stone (or EMPTY/WALL) and the incrementally-updated
-/// patterns for both sides. Candidacy is tracked separately, in the per-ply candidate bitboard
-/// rather than on the cell.
-struct Cell
-{
-    Color     piece;              ///< Stone color, or EMPTY / WALL.
-    Pattern4  pattern4[SIDE_NB];  ///< Aggregate four-direction pattern, per side.
-    Pattern2x pattern2x[4];       ///< Line pattern of both colors, one per direction.
-
-    /// The line-level pattern of this cell in direction `dir`, from `c`'s perspective.
-    Pattern pattern(Color c, int dir) const
-    {
-        assert(c == BLACK || c == WHITE);
-        return c == BLACK ? pattern2x[dir].patBlack : pattern2x[dir].patWhite;
-    }
-
-    /// The combined four-direction pattern code at this cell for one side (indexes the score
-    /// and eval tables).
-    template <Color C>
-    PatternCode pcode() const
-    {
-        static_assert(C == BLACK || C == WHITE);
-        if constexpr (C == BLACK)
-            return PatternConfig::PCODE[pattern2x[0].patBlack][pattern2x[1].patBlack]
-                                       [pattern2x[2].patBlack][pattern2x[3].patBlack];
-        else
-            return PatternConfig::PCODE[pattern2x[0].patWhite][pattern2x[1].patWhite]
-                                       [pattern2x[2].patWhite][pattern2x[3].patWhite];
-    }
-
-    /// Recompute both sides' pattern4 from fresh pattern codes. (Move-ordering scores are no
-    /// longer cached; movepick computes them on demand from the same P4SCORES entries.)
-    template <Rule R>
-    void updatePattern4(PatternCode pcodeBlack, PatternCode pcodeWhite)
-    {
-        pattern4[BLACK] = (Pattern4)Evaluation::getP4Score(R, BLACK, pcodeBlack);
-        pattern4[WHITE] = (Pattern4)Evaluation::getP4Score(R, WHITE, pcodeWhite);
-    }
-};
-
-/// The central board-position representation. Beyond the cell grid it keeps the per-direction
-/// bitkeys and a per-ply StateInfo/UpdateCache history, so move() and undo() update the position
-/// incrementally rather than rescanning the board. The copy constructor is explicit (and the
-/// implicit copy deleted) to avoid accidental expensive copies.
+/// The central board-position representation. Per-cell state lives in flat SoA arrays (per-
+/// direction line patterns plus packed pattern4 nibbles); occupancy is decoded straight from the
+/// per-direction bitkeys, and a per-ply StateInfo/UpdateCache history lets move() and undo()
+/// update the position incrementally rather than rescanning the board. The copy constructor is
+/// explicit (and the implicit copy deleted) to avoid accidental expensive copies.
 class Board
 {
 public:
@@ -206,11 +167,16 @@ public:
     // ------------------------------------------------------------------------
     // pos-specific info queries
 
-    /// Get color of piece at pos on board.
+    /// Get color of the piece at pos, decoded from the horizontal bitkey.
+    /// Codes: 00 wall, 01 white, 10 black, 11 empty; `code ^ ((~code & 1) << 1)` maps them
+    /// onto the Color enum exactly (00->WALL, 01->WHITE, 10->BLACK, 11->EMPTY).
     inline Color get(Pos pos) const
     {
         assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
-        return cells[pos].piece;
+        int      x    = pos & 31;  // padded x  (Pos is ((y+B)<<5) | (x+B))
+        int      y    = pos >> 5;  // padded y
+        uint32_t code = uint32_t(bitKey0[y] >> (2 * x)) & 0b11u;
+        return Color(code ^ ((~code & 1u) << 1));
     }
 
     /// Aggregate four-direction pattern of one side at pos. Occupied/wall cells return
@@ -219,14 +185,14 @@ public:
     {
         assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
         assert(side == BLACK || side == WHITE);
-        return cells[pos].pattern4[side];
+        return Pattern4((pattern4x2[pos] >> (4 * side)) & 0xF);
     }
 
-    /// Both sides' pattern4 packed as nibbles (black low, white high).
+    /// Both sides' packed pattern4 nibbles at pos (black low, white high).
     inline uint8_t pattern4Pair(Pos pos) const
     {
         assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
-        return uint8_t(cells[pos].pattern4[BLACK]) | uint8_t(cells[pos].pattern4[WHITE]) << 4;
+        return pattern4x2[pos];
     }
 
     /// Line-level pattern of one side at pos in direction dir.
@@ -235,7 +201,7 @@ public:
         assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
         assert(side == BLACK || side == WHITE);
         assert(dir >= 0 && dir < 4);
-        return cells[pos].pattern(side, dir);
+        return side == BLACK ? pattern2xs[pos][dir].patBlack : pattern2xs[pos][dir].patWhite;
     }
 
     /// Combined four-direction pattern code at pos for one side.
@@ -244,15 +210,21 @@ public:
     {
         static_assert(C == BLACK || C == WHITE);
         assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
-        return cells[pos].pcode<C>();
+        const Pattern2x *p2x = pattern2xs[pos];
+        if constexpr (C == BLACK)
+            return PatternConfig::PCODE[p2x[0].patBlack][p2x[1].patBlack][p2x[2].patBlack]
+                                       [p2x[3].patBlack];
+        else
+            return PatternConfig::PCODE[p2x[0].patWhite][p2x[1].patWhite][p2x[2].patWhite]
+                                       [p2x[3].patWhite];
     }
 
     /// Check if the pos is in the region of current board size.
     bool isInBoard(Pos pos) const { return pos.isInBoard(boardSize, boardSize); }
 
-    /// Check if the pos is on an empty cell.
+    /// Check if the pos is on an empty cell. Wall and occupied cells both read false.
     /// @pos The pos to query, which is assumed to meet 'pos.valid() == true'.
-    bool isEmpty(Pos pos) const { return get(pos) == EMPTY; }
+    bool isEmpty(Pos pos) const { return emptyBB.test(pos); }
 
     /// Check if the pos is legal (on an empty cell or is a pass move). The PASS check comes first
     /// so a pass never reaches isEmpty()/get(), which would index out of the cell grid for
@@ -303,8 +275,8 @@ public:
     bool checkForbiddenPoint(Pos pos) const;
 
     /// Compute the move-ordering score of an empty cell on demand (cold-path helper; hot
-    /// callers batch the same lookups inline). Values are identical to the score formerly
-    /// cached on Cell: own attacking score plus the opponent's defensive score.
+    /// callers batch the same lookups inline). Values are identical to the formerly cached
+    /// per-cell score: own attacking score plus the opponent's defensive score.
     Score score(Rule rule, Pos pos, Color side) const;
 
     /// Query the bitkey at the given pos and direction.
@@ -398,14 +370,6 @@ public:
     std::string trace(Rule rule) const;
 
 private:
-    /// Get cell of piece at pos on board (Board internals only; external consumers go
-    /// through the per-field accessors above).
-    inline const Cell &cell(Pos pos) const
-    {
-        assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
-        return cells[pos];
-    }
-
     /// Saved per-cell state of one updated cell, so undo() can restore it without any
     /// table lookup: the changed direction's line pattern byte plus both sides' pattern4
     /// packed as nibbles (black low, white high).
@@ -418,9 +382,13 @@ private:
     /// direction over 4 directions; with the largest half-line length L=5 that is 40 cells.
     using UpdateCache = std::array<SingleCellUpdateCache, 40>;
 
-    /// The board cell grid. Sized to the padded coordinate space (boundary walls included) so
-    /// neighbour accesses never need an in-range check.
-    Cell cells[FULL_BOARD_CELL_COUNT];
+    /// Per-direction line patterns of both colors, one byte per direction, cell-major.
+    /// AoS so pcode() reads one 4-byte group; the whole array is 4 KB (L1-resident). Sized to
+    /// the padded coordinate space (boundary walls included) so neighbour accesses never need
+    /// an in-range check.
+    Pattern2x pattern2xs[FULL_BOARD_CELL_COUNT][4];
+    /// Packed pattern4 nibbles per cell: black in the low nibble, white in the high one.
+    uint8_t pattern4x2[FULL_BOARD_CELL_COUNT];
 
     // Per-direction bitkeys: 2 bits per cell, indexed so one line maps to a contiguous run of
     // bits. Each array is indexed by the line's fixed coordinate; the bracket shows bit order.
