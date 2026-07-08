@@ -293,14 +293,24 @@ void MovePicker::scoreAllMoves()
             m.score = m.rawScore = policyBuf->score(m.pos);
             maxPolicyScore       = std::max(maxPolicyScore, m.rawScore);
         }
-        else if constexpr (bool(Type & BALANCED))
-            m.score = m.rawScore = c.score[self];
-        else if constexpr (bool(Type & ATTACK))
-            m.score = m.rawScore = (c.score[self] * 2 + c.score[oppo]) / 3;
-        else if constexpr (bool(Type & DEFEND))
-            m.score = m.rawScore = (c.score[self] + c.score[oppo] * 2) / 3;
-        else
-            assert(false && "incorrect score type");
+        else {
+            // Scores are no longer cached on the cell: recompute from the pattern codes.
+            // Same P4SCORES entries move() reads, so values are identical to the old cache.
+            Pattern4Score p4ScoreBlack = Evaluation::getP4Score(rule, BLACK, c.pcode<BLACK>());
+            Pattern4Score p4ScoreWhite = Evaluation::getP4Score(rule, WHITE, c.pcode<WHITE>());
+            Score         scores[SIDE_NB] = {
+                Score(p4ScoreBlack.scoreSelf() + p4ScoreWhite.scoreOppo()),
+                Score(p4ScoreWhite.scoreSelf() + p4ScoreBlack.scoreOppo()),
+            };
+            if constexpr (bool(Type & BALANCED))
+                m.score = m.rawScore = scores[self];
+            else if constexpr (bool(Type & ATTACK))
+                m.score = m.rawScore = (scores[self] * 2 + scores[oppo]) / 3;
+            else if constexpr (bool(Type & DEFEND))
+                m.score = m.rawScore = (scores[self] + scores[oppo] * 2) / 3;
+            else
+                assert(false && "incorrect score type");
+        }
 
         if (bool(Type & MAIN_HISTORY) && mainHistory) {
             if (c.pattern4[self] >= H_FLEX3)

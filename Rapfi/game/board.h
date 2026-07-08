@@ -96,13 +96,12 @@ struct StateInfo
 };
 
 /// All per-cell state the engine maintains: the stone (or EMPTY/WALL) and the incrementally-updated
-/// patterns, scores and evaluation for both sides. Candidacy is tracked separately, in the per-ply
+/// patterns and evaluation for both sides. Candidacy is tracked separately, in the per-ply
 /// candidate bitboard rather than on the cell.
 struct Cell
 {
     Color     piece;              ///< Stone color, or EMPTY / WALL.
     Pattern4  pattern4[SIDE_NB];  ///< Aggregate four-direction pattern, per side.
-    Score     score[SIDE_NB];     ///< Move-ordering score, per side.
     Value     valueBlack;    ///< This cell's contribution to the classical eval, from black's view.
     Pattern2x pattern2x[4];  ///< Line pattern of both colors, one per direction.
 
@@ -127,17 +126,13 @@ struct Cell
                                        [pattern2x[2].patWhite][pattern2x[3].patWhite];
     }
 
-    /// Recompute both sides' pattern4 and move-ordering score from fresh pattern codes. Each
-    /// side's score blends its own attacking score with the opponent's defensive score.
+    /// Recompute both sides' pattern4 from fresh pattern codes. (Move-ordering scores are no
+    /// longer cached; movepick computes them on demand from the same P4SCORES entries.)
     template <Rule R>
-    void updatePattern4AndScore(PatternCode pcodeBlack, PatternCode pcodeWhite)
+    void updatePattern4(PatternCode pcodeBlack, PatternCode pcodeWhite)
     {
-        Pattern4Score p4ScoreBlack = Evaluation::getP4Score(R, BLACK, pcodeBlack);
-        Pattern4Score p4ScoreWhite = Evaluation::getP4Score(R, WHITE, pcodeWhite);
-        pattern4[BLACK]            = (Pattern4)p4ScoreBlack;
-        pattern4[WHITE]            = (Pattern4)p4ScoreWhite;
-        score[BLACK]               = p4ScoreBlack.scoreSelf() + p4ScoreWhite.scoreOppo();
-        score[WHITE]               = p4ScoreWhite.scoreSelf() + p4ScoreBlack.scoreOppo();
+        pattern4[BLACK] = (Pattern4)Evaluation::getP4Score(R, BLACK, pcodeBlack);
+        pattern4[WHITE] = (Pattern4)Evaluation::getP4Score(R, WHITE, pcodeWhite);
     }
 };
 
@@ -281,6 +276,11 @@ public:
     /// @return Whether this pos is a real forbidden point.
     bool checkForbiddenPoint(Pos pos) const;
 
+    /// Compute the move-ordering score of an empty cell on demand (cold-path helper; hot
+    /// callers batch the same lookups inline). Values are identical to the score formerly
+    /// cached on Cell: own attacking score plus the opponent's defensive score.
+    Score score(Rule rule, Pos pos, Color side) const;
+
     /// Query the bitkey at the given pos and direction.
     template <Rule R>
     uint64_t getKeyAt(Pos pos, int dir) const;
@@ -369,14 +369,13 @@ public:
     std::string positionString() const;
 
     /// Trace the current board state (used for debugging).
-    std::string trace() const;
+    std::string trace(Rule rule) const;
 
 private:
     /// Saved per-cell state of one updated cell, so undo() can restore it without recomputation.
     struct SingleCellUpdateCache
     {
         Pattern4 pattern4[SIDE_NB];
-        Score    score[SIDE_NB];
         Value    valueBlack;
     };
     /// Per-move scratch for the cells a single move touches. A move updates at most 2*L cells per

@@ -172,7 +172,7 @@ void Board::newGame()
         }
 
         PatternCode pcode[SIDE_NB] = {c.pcode<BLACK>(), c.pcode<WHITE>()};
-        c.updatePattern4AndScore<R>(pcode[BLACK], pcode[WHITE]);
+        c.updatePattern4<R>(pcode[BLACK], pcode[WHITE]);
         st.p4Count[BLACK][c.pattern4[BLACK]]++;
         st.p4Count[WHITE][c.pattern4[WHITE]]++;
         valueBlack += c.valueBlack = Evaluation::getValueBlack(R, pcode[BLACK], pcode[WHITE]);
@@ -265,11 +265,9 @@ void Board::move(Pos pos)
 
             c.pattern2x[dir] = PatternConfig::lookupPattern<R>(bitKey[dir]);
 
-            // Save the cell's pre-update pattern4/score/value so undo() can restore it verbatim.
+            // Save the cell's pre-update pattern4/value so undo() can restore it verbatim.
             pc[updateCacheIdx].pattern4[BLACK] = c.pattern4[BLACK];
             pc[updateCacheIdx].pattern4[WHITE] = c.pattern4[WHITE];
-            pc[updateCacheIdx].score[BLACK]    = c.score[BLACK];
-            pc[updateCacheIdx].score[WHITE]    = c.score[WHITE];
             if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
                 pc[updateCacheIdx].valueBlack = c.valueBlack;
             }
@@ -284,7 +282,7 @@ void Board::move(Pos pos)
 
             st.p4Count[BLACK][c.pattern4[BLACK]]--;
             st.p4Count[WHITE][c.pattern4[WHITE]]--;
-            c.updatePattern4AndScore<R>(pcode[BLACK], pcode[WHITE]);
+            c.updatePattern4<R>(pcode[BLACK], pcode[WHITE]);
             st.p4Count[BLACK][c.pattern4[BLACK]]++;
             st.p4Count[WHITE][c.pattern4[WHITE]]++;
 
@@ -375,7 +373,7 @@ void Board::undo()
     int                updateCacheIdx = 0;
 
     // Mirror move()'s line walk over the same cells in the same order, but restore each cell's
-    // pattern4/score/value from the saved UpdateCache instead of recomputing them. The recomputed
+    // pattern4/value from the saved UpdateCache instead of recomputing them. The recomputed
     // line pattern (pattern2x) is the one piece that must still be derived from the bitkey.
     constexpr int L         = PatternConfig::HalfLineLen<R>;
     int           x         = lastPos.x() + BOARD_BOUNDARY;
@@ -397,8 +395,6 @@ void Board::undo()
             c.pattern2x[dir]  = PatternConfig::lookupPattern<R>(bitKey[dir]);
             c.pattern4[BLACK] = pc[updateCacheIdx].pattern4[BLACK];
             c.pattern4[WHITE] = pc[updateCacheIdx].pattern4[WHITE];
-            c.score[BLACK]    = pc[updateCacheIdx].score[BLACK];
-            c.score[WHITE]    = pc[updateCacheIdx].score[WHITE];
             if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
                 c.valueBlack = pc[updateCacheIdx].valueBlack;
             }
@@ -510,6 +506,15 @@ bool Board::checkForbiddenPoint(Pos pos) const
     return winByThree >= 2;
 }
 
+Score Board::score(Rule rule, Pos pos, Color side) const
+{
+    const Cell   &c            = cell(pos);
+    Pattern4Score p4ScoreBlack = Evaluation::getP4Score(rule, BLACK, c.pcode<BLACK>());
+    Pattern4Score p4ScoreWhite = Evaluation::getP4Score(rule, WHITE, c.pcode<WHITE>());
+    return side == BLACK ? p4ScoreBlack.scoreSelf() + p4ScoreWhite.scoreOppo()
+                         : p4ScoreWhite.scoreSelf() + p4ScoreBlack.scoreOppo();
+}
+
 Pos Board::getLastActualMoveOfSide(Color side) const
 {
     assert(side == BLACK || side == WHITE);
@@ -562,7 +567,7 @@ std::string Board::positionString() const
     return ss.str();
 }
 
-std::string Board::trace() const
+std::string Board::trace(Rule rule) const
 {
     std::stringstream ss;
     const StateInfo  &st = stateInfo();
@@ -634,7 +639,7 @@ std::string Board::trace() const
     printBoard(
         [&](Pos pos) {
             if (isEmpty(pos))
-                ss << std::setw(3) << cell(pos).score[BLACK];
+                ss << std::setw(3) << score(rule, pos, BLACK);
             else {
                 ss << '[';
                 printPiece(pos);
@@ -647,7 +652,7 @@ std::string Board::trace() const
     printBoard(
         [&](Pos pos) {
             if (isEmpty(pos))
-                ss << std::setw(3) << cell(pos).score[WHITE];
+                ss << std::setw(3) << score(rule, pos, WHITE);
             else {
                 ss << '[';
                 printPiece(pos);
