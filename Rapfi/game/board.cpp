@@ -175,7 +175,7 @@ void Board::newGame()
         c.updatePattern4<R>(pcode[BLACK], pcode[WHITE]);
         st.p4Count[BLACK][c.pattern4[BLACK]]++;
         st.p4Count[WHITE][c.pattern4[WHITE]]++;
-        valueBlack += c.valueBlack = Evaluation::getValueBlack(R, pcode[BLACK], pcode[WHITE]);
+        valueBlack += Evaluation::getValueBlack(R, pcode[BLACK], pcode[WHITE]);
     }
     st.valueBlack = valueBlack;
     st.candArea   = CandArea();
@@ -259,30 +259,40 @@ void Board::move(Pos pos)
             if (c.piece != EMPTY)
                 continue;
 
-            if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
-                deltaValueBlack -= c.valueBlack;
-            }
+            // Save the cell's pre-update pattern4 so undo() can restore it verbatim.
+            pc[updateCacheIdx].pattern4[BLACK] = c.pattern4[BLACK];
+            pc[updateCacheIdx].pattern4[WHITE] = c.pattern4[WHITE];
+            updateCacheIdx++;
+
+            // PCODE is order-independent, so index it with the changed direction last:
+            // the three unchanged directions give one base row per color, and the old and
+            // new pcode are two loads from that same 16-entry row.
+            const int          d1 = (dir + 1) & 3, d2 = (dir + 2) & 3, d3 = (dir + 3) & 3;
+            const PatternCode *rowBlack =
+                PatternConfig::PCODE[c.pattern2x[d1].patBlack][c.pattern2x[d2].patBlack]
+                                    [c.pattern2x[d3].patBlack];
+            const PatternCode *rowWhite =
+                PatternConfig::PCODE[c.pattern2x[d1].patWhite][c.pattern2x[d2].patWhite]
+                                    [c.pattern2x[d3].patWhite];
+            const Pattern oldBlack = c.pattern2x[dir].patBlack;
+            const Pattern oldWhite = c.pattern2x[dir].patWhite;
 
             c.pattern2x[dir] = PatternConfig::lookupPattern<R>(bitKey[dir]);
 
-            // Save the cell's pre-update pattern4/value so undo() can restore it verbatim.
-            pc[updateCacheIdx].pattern4[BLACK] = c.pattern4[BLACK];
-            pc[updateCacheIdx].pattern4[WHITE] = c.pattern4[WHITE];
-            if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
-                pc[updateCacheIdx].valueBlack = c.valueBlack;
-            }
-            updateCacheIdx++;
-
-            PatternCode pcode[SIDE_NB] = {c.pcode<BLACK>(), c.pcode<WHITE>()};
+            PatternCode pcodeBlack = rowBlack[c.pattern2x[dir].patBlack];
+            PatternCode pcodeWhite = rowWhite[c.pattern2x[dir].patWhite];
 
             if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
-                deltaValueBlack += c.valueBlack =
-                    Evaluation::getValueBlack(R, pcode[BLACK], pcode[WHITE]);
+                // The old value is no longer cached on the cell: rebuild it from the old
+                // pcodes (same-row loads) so the incremental sum stays bit-identical.
+                deltaValueBlack +=
+                    Evaluation::getValueBlack(R, pcodeBlack, pcodeWhite)
+                    - Evaluation::getValueBlack(R, rowBlack[oldBlack], rowWhite[oldWhite]);
             }
 
             st.p4Count[BLACK][c.pattern4[BLACK]]--;
             st.p4Count[WHITE][c.pattern4[WHITE]]--;
-            c.updatePattern4<R>(pcode[BLACK], pcode[WHITE]);
+            c.updatePattern4<R>(pcodeBlack, pcodeWhite);
             st.p4Count[BLACK][c.pattern4[BLACK]]++;
             st.p4Count[WHITE][c.pattern4[WHITE]]++;
 
@@ -302,8 +312,11 @@ void Board::move(Pos pos)
     // The placed cell is no longer empty: drop its own (now stale) value and p4 contributions
     // that were folded in above.
     const Cell &c = cell(pos);
-    if (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
-        st.valueBlack += deltaValueBlack - c.valueBlack;
+    if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
+        // The placed cell's pattern2x is frozen at its valid empty-cell state (the walk
+        // skips i == 0), so its stale value contribution can be rebuilt from its pcodes.
+        st.valueBlack +=
+            deltaValueBlack - Evaluation::getValueBlack(R, c.pcode<BLACK>(), c.pcode<WHITE>());
     }
     st.p4Count[BLACK][c.pattern4[BLACK]]--;
     st.p4Count[WHITE][c.pattern4[WHITE]]--;
@@ -373,7 +386,7 @@ void Board::undo()
     int                updateCacheIdx = 0;
 
     // Mirror move()'s line walk over the same cells in the same order, but restore each cell's
-    // pattern4/value from the saved UpdateCache instead of recomputing them. The recomputed
+    // pattern4 from the saved UpdateCache instead of recomputing it. The recomputed
     // line pattern (pattern2x) is the one piece that must still be derived from the bitkey.
     constexpr int L         = PatternConfig::HalfLineLen<R>;
     int           x         = lastPos.x() + BOARD_BOUNDARY;
@@ -395,9 +408,6 @@ void Board::undo()
             c.pattern2x[dir]  = PatternConfig::lookupPattern<R>(bitKey[dir]);
             c.pattern4[BLACK] = pc[updateCacheIdx].pattern4[BLACK];
             c.pattern4[WHITE] = pc[updateCacheIdx].pattern4[WHITE];
-            if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
-                c.valueBlack = pc[updateCacheIdx].valueBlack;
-            }
             updateCacheIdx++;
         }
 

@@ -96,14 +96,13 @@ struct StateInfo
 };
 
 /// All per-cell state the engine maintains: the stone (or EMPTY/WALL) and the incrementally-updated
-/// patterns and evaluation for both sides. Candidacy is tracked separately, in the per-ply
-/// candidate bitboard rather than on the cell.
+/// patterns for both sides. Candidacy is tracked separately, in the per-ply candidate bitboard
+/// rather than on the cell.
 struct Cell
 {
     Color     piece;              ///< Stone color, or EMPTY / WALL.
     Pattern4  pattern4[SIDE_NB];  ///< Aggregate four-direction pattern, per side.
-    Value     valueBlack;    ///< This cell's contribution to the classical eval, from black's view.
-    Pattern2x pattern2x[4];  ///< Line pattern of both colors, one per direction.
+    Pattern2x pattern2x[4];       ///< Line pattern of both colors, one per direction.
 
     /// The line-level pattern of this cell in direction `dir`, from `c`'s perspective.
     Pattern pattern(Color c, int dir) const
@@ -376,7 +375,6 @@ private:
     struct SingleCellUpdateCache
     {
         Pattern4 pattern4[SIDE_NB];
-        Value    valueBlack;
     };
     /// Per-move scratch for the cells a single move touches. A move updates at most 2*L cells per
     /// direction over 4 directions; with the largest half-line length L=5 that is 40 cells.
