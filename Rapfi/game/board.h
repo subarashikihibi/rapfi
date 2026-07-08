@@ -206,18 +206,45 @@ public:
     // ------------------------------------------------------------------------
     // pos-specific info queries
 
-    /// Get cell of piece at pos on board.
-    inline const Cell &cell(Pos pos) const
-    {
-        assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
-        return cells[pos];
-    }
-
     /// Get color of piece at pos on board.
     inline Color get(Pos pos) const
     {
         assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
         return cells[pos].piece;
+    }
+
+    /// Aggregate four-direction pattern of one side at pos. Occupied/wall cells return
+    /// their frozen (placement-time / zero) values — see the freeze invariant in the spec.
+    inline Pattern4 pattern4(Pos pos, Color side) const
+    {
+        assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
+        assert(side == BLACK || side == WHITE);
+        return cells[pos].pattern4[side];
+    }
+
+    /// Both sides' pattern4 packed as nibbles (black low, white high).
+    inline uint8_t pattern4Pair(Pos pos) const
+    {
+        assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
+        return uint8_t(cells[pos].pattern4[BLACK]) | uint8_t(cells[pos].pattern4[WHITE]) << 4;
+    }
+
+    /// Line-level pattern of one side at pos in direction dir.
+    inline Pattern pattern(Pos pos, Color side, int dir) const
+    {
+        assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
+        assert(side == BLACK || side == WHITE);
+        assert(dir >= 0 && dir < 4);
+        return cells[pos].pattern(side, dir);
+    }
+
+    /// Combined four-direction pattern code at pos for one side.
+    template <Color C>
+    inline PatternCode pcode(Pos pos) const
+    {
+        static_assert(C == BLACK || C == WHITE);
+        assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
+        return cells[pos].pcode<C>();
     }
 
     /// Check if the pos is in the region of current board size.
@@ -371,6 +398,14 @@ public:
     std::string trace(Rule rule) const;
 
 private:
+    /// Get cell of piece at pos on board (Board internals only; external consumers go
+    /// through the per-field accessors above).
+    inline const Cell &cell(Pos pos) const
+    {
+        assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
+        return cells[pos];
+    }
+
     /// Saved per-cell state of one updated cell, so undo() can restore it without any
     /// table lookup: the changed direction's line pattern byte plus both sides' pattern4
     /// packed as nibbles (black low, white high).

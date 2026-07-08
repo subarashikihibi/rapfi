@@ -48,8 +48,8 @@ bool checkP4(const Board *board)
     int p4[SIDE_NB][PATTERN4_NB] = {0};
     FOR_EVERY_EMPTY_POS(board, pos)
     {
-        p4[BLACK][board->cell(pos).pattern4[BLACK]]++;
-        p4[WHITE][board->cell(pos).pattern4[WHITE]]++;
+        p4[BLACK][board->pattern4(pos, BLACK)]++;
+        p4[WHITE][board->pattern4(pos, WHITE)]++;
     }
     for (Color c : {BLACK, WHITE})
         for (Pattern4 i = FORBID; i < PATTERN4_NB; i = Pattern4(i + 1)) {
@@ -429,25 +429,26 @@ bool Board::checkForbiddenPoint(Pos pos) const
     // one three can only be completed via another forbidden point is not actually forbidden), so
     // overline and double-four are confirmed directly from the line patterns while double-three is
     // verified by placing the stone and counting threes that lead to a genuine win.
-    const Cell &fpCell = cell(pos);
-    if (fpCell.pattern4[BLACK] != FORBID)
+    if (pattern4(pos, BLACK) != FORBID)
         return false;
 
     int winByFour = 0;
     for (int dir = 0; dir < 4; dir++) {
+        Pattern p = pattern(pos, BLACK, dir);
         // If this forbidden point is a Overline, it must be a true forbidden point.
-        if (fpCell.pattern2x[dir].patBlack == OL)
+        if (p == OL)
             return true;
         // Otherwise if it has at least two Four(B4/F4), it must be a true forbidden point.
-        else if (fpCell.pattern2x[dir].patBlack == B4 || fpCell.pattern2x[dir].patBlack == B4S
-                 || fpCell.pattern2x[dir].patBlack == F4) {
+        else if (p == B4 || p == B4S || p == F4) {
             if (++winByFour >= 2)
                 return true;
         }
     }
 
     // Check the remaining false-forbidden cases by placing black at pos and recursing. The guards
-    // restore the side to move and undo the stone on every exit path of this function.
+    // restore the side to move and undo the stone on every exit path of this function. Reads of
+    // the probe cell after the ScopedMove return its frozen placement-time patterns (the freeze
+    // invariant), which is exactly the pre-placement state this check needs.
     ScopedSwitchSide                                        asBlack(*this, BLACK);
     ScopedMove<Rule::RENJU, Board::MoveType::NO_EVAL_MULTI> probe(*this, pos);
 
@@ -456,7 +457,7 @@ bool Board::checkForbiddenPoint(Pos pos) const
 
     for (int dir = 0; dir < 4; dir++) {
         // Only look line that is possible to become a FLEX4 or FIVE
-        Pattern p = fpCell.pattern2x[dir].patBlack;
+        Pattern p = pattern(pos, BLACK, dir);
 
         // double three forbidden type
         if (p != F3 && p != F3S)  // p must be one of F3, F3S
@@ -466,32 +467,32 @@ bool Board::checkForbiddenPoint(Pos pos) const
         for (int i = 0; i < MaxFindDist; i++) {
             posi -= DIRECTION[dir];
 
-            if (const Cell &c = cell(posi); c.piece == EMPTY) {
-                if (c.pattern4[BLACK] == B_FLEX4 || c.pattern(BLACK, dir) == F5
-                    || c.pattern4[BLACK] == FORBID && c.pattern(BLACK, dir) == F4
+            if (Color piece = get(posi); piece == EMPTY) {
+                if (pattern4(posi, BLACK) == B_FLEX4 || pattern(posi, BLACK, dir) == F5
+                    || pattern4(posi, BLACK) == FORBID && pattern(posi, BLACK, dir) == F4
                            && !checkForbiddenPoint(posi)) {
                     winByThree++;
                     goto next_direction;
                 }
                 break;
             }
-            else if (c.piece != BLACK)
+            else if (piece != BLACK)
                 break;
         }
         posi = pos;
         for (int i = 0; i < MaxFindDist; i++) {
             posi += DIRECTION[dir];
 
-            if (const Cell &c = cell(posi); c.piece == EMPTY) {
-                if (c.pattern4[BLACK] == B_FLEX4 || c.pattern(BLACK, dir) == F5
-                    || c.pattern4[BLACK] == FORBID && c.pattern(BLACK, dir) == F4
+            if (Color piece = get(posi); piece == EMPTY) {
+                if (pattern4(posi, BLACK) == B_FLEX4 || pattern(posi, BLACK, dir) == F5
+                    || pattern4(posi, BLACK) == FORBID && pattern(posi, BLACK, dir) == F4
                            && !checkForbiddenPoint(posi)) {
                     winByThree++;
                     goto next_direction;
                 }
                 break;
             }
-            else if (c.piece != BLACK)
+            else if (piece != BLACK)
                 break;
         }
 
@@ -505,9 +506,8 @@ bool Board::checkForbiddenPoint(Pos pos) const
 
 Score Board::score(Rule rule, Pos pos, Color side) const
 {
-    const Cell   &c            = cell(pos);
-    Pattern4Score p4ScoreBlack = Evaluation::getP4Score(rule, BLACK, c.pcode<BLACK>());
-    Pattern4Score p4ScoreWhite = Evaluation::getP4Score(rule, WHITE, c.pcode<WHITE>());
+    Pattern4Score p4ScoreBlack = Evaluation::getP4Score(rule, BLACK, pcode<BLACK>(pos));
+    Pattern4Score p4ScoreWhite = Evaluation::getP4Score(rule, WHITE, pcode<WHITE>(pos));
     return side == BLACK ? p4ScoreBlack.scoreSelf() + p4ScoreWhite.scoreOppo()
                          : p4ScoreWhite.scoreSelf() + p4ScoreBlack.scoreOppo();
 }
@@ -619,7 +619,7 @@ std::string Board::trace(Rule rule) const
     ss << "----------Pattern4----Black----------\n";
     printBoard([&](Pos pos) {
         if (isEmpty(pos))
-            ss << cell(pos).pattern4[BLACK];
+            ss << pattern4(pos, BLACK);
         else
             ss << '.';
     });
@@ -627,7 +627,7 @@ std::string Board::trace(Rule rule) const
     ss << "----------Pattern4----White----------\n";
     printBoard([&](Pos pos) {
         if (isEmpty(pos))
-            ss << cell(pos).pattern4[WHITE];
+            ss << pattern4(pos, WHITE);
         else
             ss << '.';
     });
