@@ -259,9 +259,11 @@ void Board::move(Pos pos)
             if (c.piece != EMPTY)
                 continue;
 
-            // Save the cell's pre-update pattern4 so undo() can restore it verbatim.
-            pc[updateCacheIdx].pattern4[BLACK] = c.pattern4[BLACK];
-            pc[updateCacheIdx].pattern4[WHITE] = c.pattern4[WHITE];
+            // Save the cell's pre-update line pattern and pattern4 pair so undo() can
+            // restore them verbatim (captured before any write to the cell).
+            pc[updateCacheIdx].pattern2x = c.pattern2x[dir];
+            pc[updateCacheIdx].pattern4Pair =
+                uint8_t(c.pattern4[BLACK]) | uint8_t(c.pattern4[WHITE]) << 4;
             updateCacheIdx++;
 
             // PCODE is order-independent, so index it with the changed direction last:
@@ -385,19 +387,10 @@ void Board::undo()
     const UpdateCache &pc             = updateCache[moveCount];
     int                updateCacheIdx = 0;
 
-    // Mirror move()'s line walk over the same cells in the same order, but restore each cell's
-    // pattern4 from the saved UpdateCache instead of recomputing it. The recomputed
-    // line pattern (pattern2x) is the one piece that must still be derived from the bitkey.
-    constexpr int L         = PatternConfig::HalfLineLen<R>;
-    int           x         = lastPos.x() + BOARD_BOUNDARY;
-    int           y         = lastPos.y() + BOARD_BOUNDARY;
-    uint64_t      bitKey[4] = {
-        rotr(bitKey0[y], 2 * (x - 2 * L)),
-        rotr(bitKey1[x], 2 * (y - 2 * L)),
-        rotr(bitKey2[x + y], 2 * (x - 2 * L)),
-        rotr(bitKey3[FULL_BOARD_SIZE - 1 - x + y], 2 * (x - 2 * L)),
-    };
-
+    // Mirror move()'s line walk over the same cells in the same order, restoring each cell's
+    // changed-direction line pattern and pattern4 pair straight from the saved UpdateCache —
+    // no bitkey window or table lookup needed.
+    constexpr int L = PatternConfig::HalfLineLen<R>;
     for (int i = -L; i <= L; i += 1 + (i == -1)) {
         for (int dir = 0; dir < 4; dir++) {
             Pos   posi = lastPos + DIRECTION[dir] * i;
@@ -405,17 +398,11 @@ void Board::undo()
             if (c.piece != EMPTY)
                 continue;
 
-            c.pattern2x[dir]  = PatternConfig::lookupPattern<R>(bitKey[dir]);
-            c.pattern4[BLACK] = pc[updateCacheIdx].pattern4[BLACK];
-            c.pattern4[WHITE] = pc[updateCacheIdx].pattern4[WHITE];
+            c.pattern2x[dir]  = pc[updateCacheIdx].pattern2x;
+            c.pattern4[BLACK] = Pattern4(pc[updateCacheIdx].pattern4Pair & 0xF);
+            c.pattern4[WHITE] = Pattern4(pc[updateCacheIdx].pattern4Pair >> 4);
             updateCacheIdx++;
         }
-
-        const int shamt = 2 + 2 * (i == -1);
-        bitKey[0] >>= shamt;
-        bitKey[1] >>= shamt;
-        bitKey[2] >>= shamt;
-        bitKey[3] >>= shamt;
     }
 
     assert(checkP4(this));

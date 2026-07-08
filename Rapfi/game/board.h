@@ -371,10 +371,13 @@ public:
     std::string trace(Rule rule) const;
 
 private:
-    /// Saved per-cell state of one updated cell, so undo() can restore it without recomputation.
+    /// Saved per-cell state of one updated cell, so undo() can restore it without any
+    /// table lookup: the changed direction's line pattern byte plus both sides' pattern4
+    /// packed as nibbles (black low, white high).
     struct SingleCellUpdateCache
     {
-        Pattern4 pattern4[SIDE_NB];
+        Pattern2x pattern2x;     ///< Pre-update line pattern of the changed direction.
+        uint8_t   pattern4Pair;  ///< Pre-update packed pattern4 nibbles (both sides).
     };
     /// Per-move scratch for the cells a single move touches. A move updates at most 2*L cells per
     /// direction over 4 directions; with the largest half-line length L=5 that is 40 cells.
