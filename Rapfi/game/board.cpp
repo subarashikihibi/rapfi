@@ -80,6 +80,8 @@ Board::Board(int boardSize, CandidateRange candRange)
     // at-most-boardCellCount stone moves.
     stateInfos  = std::make_unique<StateInfo[]>(1 + boardCellCount * 2);
     updateCache = std::make_unique<UpdateCache[]>(1 + boardCellCount * 2);
+    candJournal = std::make_unique<CandJournalEntry[]>(CAND_JOURNAL_CAPACITY);
+    journalTop  = 0;
 
     // Set candidate range of the board. FULL_BOARD yields a null table (every empty cell is a
     // candidate, seeded once in newGame).
@@ -119,6 +121,11 @@ Board::Board(const Board &other, Search::SearchThread *thread)
     std::copy_n(other.stateInfos.get(), 1 + moveCount, stateInfos.get());
     std::copy_n(other.updateCache.get(), 1 + moveCount, updateCache.get());
 
+    candJournal  = std::make_unique<CandJournalEntry[]>(CAND_JOURNAL_CAPACITY);
+    candidatesBB = other.candidatesBB;
+    journalTop   = other.journalTop;
+    std::copy_n(other.candJournal.get(), other.journalTop, candJournal.get());
+
     // Sync evaluator state with board state
     if (evaluator_)
         evaluator_->syncWithBoard(*this);
@@ -138,6 +145,8 @@ void Board::newGame()
     std::fill_n(bitKey3, arraySize(bitKey3), 0);
     onBoardBB.zero();
     emptyBB.zero();
+    candidatesBB.zero();
+    journalTop = 0;
 
     // Init board state to empty
     moveCount         = 0;
@@ -157,7 +166,8 @@ void Board::newGame()
         emptyBB.set(i);
     }
 
-    // Init state info of the first ply with rule R
+    // Init state info of the first ply with rule R (the memset zeroes journalStart too,
+    // matching journalTop == 0 above)
     StateInfo &st = stateInfos[moveCount];
     std::memset(&st, 0, sizeof(StateInfo));
 
@@ -203,9 +213,10 @@ void Board::move(Pos pos)
     if (UNLIKELY(pos == Pos::PASS)) {
         assert(passMoveCount() < cellCount());
 
-        StateInfo &st = stateInfos[++moveCount];
-        st            = stateInfos[moveCount - 1];
-        st.lastMove   = Pos::PASS;
+        StateInfo &st   = stateInfos[++moveCount];
+        st              = stateInfos[moveCount - 1];
+        st.lastMove     = Pos::PASS;
+        st.journalStart = journalTop;  // overwrite the copied anchor: this ply owns new entries
 
         passCount[currentSide]++;
         currentSide = ~currentSide;
@@ -227,6 +238,7 @@ void Board::move(Pos pos)
     StateInfo   &st = stateInfos[++moveCount];
     st              = stateInfos[moveCount - 1];
     st.lastMove     = pos;
+    st.journalStart = journalTop;  // overwrite the copied anchor: this ply owns new entries
     st.candArea.expand(pos, boardSize, candAreaExpandDist);
 
     currentZobristKey ^= Hash::zobrist[currentSide][pos];
@@ -332,8 +344,11 @@ void Board::move(Pos pos)
     assert(checkP4(this));
     assert(updateCacheIdx <= std::tuple_size_v<UpdateCache>);
 
-    // Mark the new stone's candidate neighborhood in the snapshotted candidate bitboard.
-    st.candidates.applyStencil(candStencil, pos);
+    // Mark the new stone's candidate neighborhood in the board-level candidate bitboard,
+    // journaling the 0->1 transitions so undo() can rewind them.
+    Bitboard::forEachStencilWord(candStencil, pos, [this](int w, uint64_t bits) {
+        setCandidateBits(w, bits);
+    });
 
     // If this move is what first created a flex four for a side, remember it as that side's
     // flex-four attack move (used by the four-defence move generator).
@@ -359,6 +374,16 @@ void Board::undo()
 {
     assert(moveCount > 0);
     Pos lastPos = getLastMove();
+
+    // Rewind this ply's candidate-bit transitions (XOR clears exactly the bits that went
+    // 0->1 at this ply; disjointness makes order irrelevant). Passes need this too:
+    // expandCandArea may have appended entries on a pass ply.
+    {
+        const StateInfo &dying = stateInfos[moveCount];
+        for (uint32_t j = journalTop; j-- > dying.journalStart;)
+            candidatesBB.words[candJournal[j].wordIdx] ^= candJournal[j].delta;
+        journalTop = dying.journalStart;
+    }
 
     // Undoing a pass just restores the side to move and pass counter.
     if (UNLIKELY(lastPos == Pos::PASS)) {
@@ -408,8 +433,8 @@ void Board::undo()
 
     assert(checkP4(this));
     assert(updateCacheIdx <= std::tuple_size_v<UpdateCache>);
-
-    // The candidate bitboard rewinds for free: it lives in the popped StateInfo (moveCount--).
+    // Journal round-trip invariant: the rewind above restored the dying ply's anchor.
+    assert(journalTop == stateInfos[moveCount + 1].journalStart);
 
     // after undo evaluator update
     if (MT == MoveType::NORMAL && evaluator_)
@@ -539,7 +564,7 @@ void Board::expandCandArea(Pos pos, int fillDist, int lineDist)
 
     auto markCandidate = [&](Pos p) {
         if (p >= 0 && p < FULL_BOARD_CELL_COUNT && isEmpty(p))
-            st.candidates.set(p);
+            setCandidateBits(p >> 6, uint64_t(1) << (p & 63));
     };
 
     for (int i = std::max(3, fillDist + 1); i <= lineDist; i++) {

@@ -72,12 +72,14 @@ class Evaluator;
         for (Bitboard::Cursor _ecCur(_ecSet); Pos pos = _ecCur.next();)
 
 /// Per-ply snapshot of the incremental board state. One StateInfo exists per move played, so a
-/// move only has to record what changed and undo() can restore the previous ply cheaply.
+/// move only has to record what changed and undo() can restore the previous ply cheaply. The
+/// candidate-move set is NOT copied per ply: it lives board-level (Board::candidatesBB) and is
+/// rewound through the candidate journal, anchored here by `journalStart`.
 struct StateInfo
 {
-    Bitboard candidates;  ///< Candidate-move set at this ply (snapshotted per ply).
-    CandArea candArea;    ///< Bounding box of candidate cells at this ply.
-    Pos      lastMove;    ///< The move that produced this ply (Pos::PASS for a pass).
+    uint32_t journalStart;  ///< First candidate-journal entry belonging to this ply.
+    CandArea candArea;      ///< Bounding box of candidate cells at this ply.
+    Pos      lastMove;      ///< The move that produced this ply (Pos::PASS for a pass).
     /// Move that first created a flex four for this side (set only on a 0 -> nonzero transition).
     Pos lastFlex4AttackMove[SIDE_NB];
     /// Most recent empty cell reaching C_BLOCK4_FLEX3 / B_FLEX4 / A_FIVE, per side.
@@ -233,14 +235,11 @@ public:
 
     /// Whether `pos` is currently a move candidate (some played stone's range covers it). This is
     /// the raw in-range test (no box / empty filtering), as used by neighbor move generation.
-    bool isCandidate(Pos pos) const { return stateInfo().candidates.test(pos); }
+    bool isCandidate(Pos pos) const { return candidatesBB.test(pos); }
 
     /// Whether `pos` is an empty candidate cell: in the raw candidate set and currently empty (no
     /// box clip). Off-board positions read as false, so a neighbor probe needs no range check.
-    bool isEmptyCandidate(Pos pos) const
-    {
-        return emptyBB.test(pos) && stateInfo().candidates.test(pos);
-    }
+    bool isEmptyCandidate(Pos pos) const { return emptyBB.test(pos) && candidatesBB.test(pos); }
 
     /// Bitboard of all on-board (non-wall) cells; constant for the board's lifetime.
     const Bitboard &onBoard() const { return onBoardBB; }
@@ -254,7 +253,7 @@ public:
     Bitboard candidateIterSet() const
     {
         Bitboard bb;
-        bb.buildCandSet(stateInfo().candidates, emptyBB, stateInfo().candArea);
+        bb.buildCandSet(candidatesBB, emptyBB, stateInfo().candArea);
         return bb;
     }
 
@@ -265,7 +264,7 @@ public:
     Bitboard emptyCandidates() const
     {
         Bitboard bb;
-        bb.setIntersect(stateInfo().candidates, emptyBB);
+        bb.setIntersect(candidatesBB, emptyBB);
         return bb;
     }
 
@@ -413,8 +412,34 @@ private:
     Bitboard::Stencil candStencil;
     Bitboard onBoardBB;  ///< All non-wall cells; built once in newGame (static for the game).
     Bitboard emptyBB;    ///< All empty cells; one bit flipped per move()/undo().
+
+    /// One 0->1 candidate-bit transition batch: XOR `delta` into `words[wordIdx]` to undo.
+    struct CandJournalEntry
+    {
+        uint16_t wordIdx;
+        uint64_t delta;
+    };
+    /// Live entries have disjoint bits per word, so <= 64 entries/word x 16 words bounds
+    /// the journal at 1024 entries — no growth logic needed.
+    static constexpr uint32_t CAND_JOURNAL_CAPACITY = Bitboard::NumWords * 64;
+
+    Bitboard candidatesBB;  ///< Candidate cells (board-level; rewound via the journal).
+    std::unique_ptr<CandJournalEntry[]> candJournal;
+    uint32_t                            journalTop;
+
     Evaluation::Evaluator *evaluator_;   ///< External evaluator (may be null).
     Search::SearchThread  *thisThread_;  ///< Owning search thread (may be null).
+
+    /// Set `bits` in candidatesBB word `w`, journaling the 0->1 transitions for undo.
+    void setCandidateBits(int w, uint64_t bits)
+    {
+        uint64_t newBits = bits & ~candidatesBB.words[w];
+        if (newBits) {
+            candidatesBB.words[w] |= newBits;
+            assert(journalTop < CAND_JOURNAL_CAPACITY);
+            candJournal[journalTop++] = {uint16_t(w), newBits};
+        }
+    }
 
     void setBitKey(Pos pos, Color c);
     void flipBitKey(Pos pos, Color c);
