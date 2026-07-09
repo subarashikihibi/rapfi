@@ -22,6 +22,7 @@
 #include "../core/types.h"
 
 #include <cassert>
+#include <cstring>
 
 /// Packs the line patterns of both colors for one cell into a single byte (4 bits each), so the
 /// board's per-cell pattern array can store all four directions in 4 bytes.
@@ -31,6 +32,16 @@ struct Pattern2x
     Pattern patWhite : 4;  ///< Line pattern seen from white's perspective.
 
     Pattern operator[](Color side) const { return side == BLACK ? patBlack : patWhite; }
+
+    /// Whole-byte equality (both colors at once); compiles to a single byte compare.
+    friend bool operator==(Pattern2x a, Pattern2x b)
+    {
+        uint8_t ra, rb;
+        std::memcpy(&ra, &a, sizeof(a));
+        std::memcpy(&rb, &b, sizeof(b));
+        return ra == rb;
+    }
+    friend bool operator!=(Pattern2x a, Pattern2x b) { return !(a == b); }
 };
 static_assert(sizeof(Pattern2x) == sizeof(uint8_t));
 

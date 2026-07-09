@@ -31,7 +31,6 @@
 #include <cstring>  // for std::memset
 #include <iomanip>
 #include <sstream>
-#include <tuple>
 
 namespace {
 
@@ -245,9 +244,11 @@ void Board::move(Pos pos)
     flipBitKey(pos, currentSide);
     emptyBB.clear(pos);
 
-    Value deltaValueBlack            = VALUE_ZERO;
-    int   f4CountBeforeMove[SIDE_NB] = {p4Count(BLACK, B_FLEX4), p4Count(WHITE, B_FLEX4)};
-    int   updateCacheIdx             = 0;
+    Value    deltaValueBlack            = VALUE_ZERO;
+    int      f4CountBeforeMove[SIDE_NB] = {p4Count(BLACK, B_FLEX4), p4Count(WHITE, B_FLEX4)};
+    int      updateCacheIdx             = 0;
+    uint64_t touchedMask                = 0;
+    int      stepIdx                    = 0;
 
     // Placing a stone only changes the line patterns of the cells within L steps of `pos` along
     // each of the 4 directions. We walk those cells from i=-L to i=+L (skipping i=0, the stone
@@ -264,7 +265,7 @@ void Board::move(Pos pos)
         rotr(bitKey3[FULL_BOARD_SIZE - 1 - x + y], 2 * (x - 2 * L)),
     };
 
-    for (int i = -L; i <= L; i += 1 + (i == -1)) {
+    for (int i = -L; i <= L; i += 1 + (i == -1), stepIdx++) {
         for (int dir = 0; dir < 4; dir++) {
             Pos posi = pos + DIRECTION[dir] * i;
             // Current cell's 2-bit occupancy code sits at bit offset 2L of the pre-rotated
@@ -274,14 +275,35 @@ void Board::move(Pos pos)
             if (((bitKey[dir] >> (2 * L)) & 0b11) != 0b11)
                 continue;
 
-            Pattern2x *p2x    = pattern2xs[posi];
-            uint8_t    p4Pair = pattern4x2[posi];
+            Pattern2x      *p2x    = pattern2xs[posi];
+            const Pattern2x oldP2x = p2x[dir];
+            const Pattern2x newP2x = PatternConfig::lookupPattern<R>(bitKey[dir]);
+            const uint8_t   p4Pair = pattern4x2[posi];
+
+            if (newP2x == oldP2x) {
+                // Line pattern unchanged in this direction (~13% of visited cells): the
+                // pcode, pattern4 pair and eval contribution are all unchanged, so skip the
+                // table walk and record no undo entry. One behavior of the full-update path
+                // must be preserved: it re-stamps lastPattern4Move even when the pattern4
+                // is unchanged, so do the same here (rare: ~0.5% of skipped cells).
+                if (UNLIKELY((p4Pair & 0xF) >= C_BLOCK4_FLEX3
+                             || (p4Pair >> 4) >= C_BLOCK4_FLEX3)) {
+                    if ((p4Pair & 0xF) >= C_BLOCK4_FLEX3)
+                        st.lastPattern4Move[BLACK][(p4Pair & 0xF) - C_BLOCK4_FLEX3] = posi;
+                    if ((p4Pair >> 4) >= C_BLOCK4_FLEX3)
+                        st.lastPattern4Move[WHITE][(p4Pair >> 4) - C_BLOCK4_FLEX3] = posi;
+                }
+                continue;
+            }
 
             // Save the cell's pre-update line pattern and pattern4 pair so undo() can
-            // restore them verbatim (captured before any write to the cell).
-            pc[updateCacheIdx].pattern2x    = p2x[dir];
-            pc[updateCacheIdx].pattern4Pair = p4Pair;
+            // restore them verbatim, and mark this walk slot in the touched mask.
+            pc.cells[updateCacheIdx].pattern2x    = oldP2x;
+            pc.cells[updateCacheIdx].pattern4Pair = p4Pair;
             updateCacheIdx++;
+            touchedMask |= uint64_t(1) << (stepIdx * 4 + dir);
+
+            p2x[dir] = newP2x;
 
             // PCODE is order-independent, so index it with the changed direction last:
             // the three unchanged directions give one base row per color, and the old and
@@ -291,20 +313,17 @@ void Board::move(Pos pos)
                 PatternConfig::PCODE[p2x[d1].patBlack][p2x[d2].patBlack][p2x[d3].patBlack];
             const PatternCode *rowWhite =
                 PatternConfig::PCODE[p2x[d1].patWhite][p2x[d2].patWhite][p2x[d3].patWhite];
-            const Pattern oldBlack = p2x[dir].patBlack;
-            const Pattern oldWhite = p2x[dir].patWhite;
 
-            p2x[dir] = PatternConfig::lookupPattern<R>(bitKey[dir]);
-
-            PatternCode pcodeBlack = rowBlack[p2x[dir].patBlack];
-            PatternCode pcodeWhite = rowWhite[p2x[dir].patWhite];
+            PatternCode pcodeBlack = rowBlack[newP2x.patBlack];
+            PatternCode pcodeWhite = rowWhite[newP2x.patWhite];
 
             if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
                 // The old value is no longer cached on the cell: rebuild it from the old
                 // pcodes (same-row loads) so the incremental sum stays bit-identical.
-                deltaValueBlack +=
-                    Evaluation::getValueBlack(R, pcodeBlack, pcodeWhite)
-                    - Evaluation::getValueBlack(R, rowBlack[oldBlack], rowWhite[oldWhite]);
+                deltaValueBlack += Evaluation::getValueBlack(R, pcodeBlack, pcodeWhite)
+                                   - Evaluation::getValueBlack(R,
+                                                               rowBlack[oldP2x.patBlack],
+                                                               rowWhite[oldP2x.patWhite]);
             }
 
             Pattern4 p4Black = Evaluation::getPattern4(R, BLACK, pcodeBlack);
@@ -327,6 +346,7 @@ void Board::move(Pos pos)
         bitKey[2] >>= shamt;
         bitKey[3] >>= shamt;
     }
+    pc.touchedMask = touchedMask;
 
     // The placed cell is no longer empty: drop its own (now stale) value and p4 contributions
     // that were folded in above. Its pattern2x entries are frozen at their valid empty-cell
@@ -342,7 +362,8 @@ void Board::move(Pos pos)
         currentSide = ~currentSide;
 
     assert(checkP4(this));
-    assert(updateCacheIdx <= std::tuple_size_v<UpdateCache>);
+    assert(updateCacheIdx <= int(arraySize(pc.cells)));
+    assert(updateCacheIdx == popcount(touchedMask));
 
     // Mark the new stone's candidate neighborhood in the board-level candidate bitboard,
     // journaling the 0->1 transitions so undo() can rewind them.
@@ -414,25 +435,26 @@ void Board::undo()
     const UpdateCache &pc             = updateCache[moveCount];
     int                updateCacheIdx = 0;
 
-    // Mirror move()'s line walk over the same cells in the same order, restoring each cell's
-    // changed-direction line pattern and pattern4 pair straight from the saved UpdateCache —
-    // no bitkey window or table lookup needed. Occupancy is unchanged between move() and here
-    // (the stone was removed above), so emptyBB selects exactly the same cell set.
+    // Restore exactly the cells move() recorded: each set bit of touchedMask encodes a walk
+    // slot (step*4 + dir), mapped back to its Pos via the walk's step offsets. Entries are
+    // stored compactly in walk order, so entry k pairs with the mask's k-th set bit — no
+    // bitkey window, table lookup, or emptyBB scan needed.
     constexpr int L = PatternConfig::HalfLineLen<R>;
-    for (int i = -L; i <= L; i += 1 + (i == -1)) {
-        for (int dir = 0; dir < 4; dir++) {
-            Pos posi = lastPos + DIRECTION[dir] * i;
-            if (!emptyBB.test(posi))
-                continue;
+    // Walk steps cover i = -L..-1 then +1..+L, so step k maps to offset k-L (k < L) or k-L+1.
+    for (uint64_t mask = pc.touchedMask; mask;) {
+        const int slot = pop_lsb(mask);
+        const int step = slot >> 2, dir = slot & 3;
+        const int i    = step < L ? step - L : step - L + 1;
+        Pos       posi = lastPos + DIRECTION[dir] * i;
+        assert(emptyBB.test(posi));
 
-            pattern2xs[posi][dir] = pc[updateCacheIdx].pattern2x;
-            pattern4x2[posi]      = pc[updateCacheIdx].pattern4Pair;
-            updateCacheIdx++;
-        }
+        pattern2xs[posi][dir] = pc.cells[updateCacheIdx].pattern2x;
+        pattern4x2[posi]      = pc.cells[updateCacheIdx].pattern4Pair;
+        updateCacheIdx++;
     }
 
     assert(checkP4(this));
-    assert(updateCacheIdx <= std::tuple_size_v<UpdateCache>);
+    assert(updateCacheIdx <= int(arraySize(pc.cells)));
     // Journal round-trip invariant: the rewind above restored the dying ply's anchor.
     assert(journalTop == stateInfos[moveCount + 1].journalStart);
 

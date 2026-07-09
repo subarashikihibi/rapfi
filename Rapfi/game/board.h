@@ -27,7 +27,6 @@
 #include "candarea.h"
 #include "pattern.h"
 
-#include <array>
 #include <cassert>
 #include <memory>
 #include <string>
@@ -377,9 +376,17 @@ private:
         Pattern2x pattern2x;     ///< Pre-update line pattern of the changed direction.
         uint8_t   pattern4Pair;  ///< Pre-update packed pattern4 nibbles (both sides).
     };
-    /// Per-move scratch for the cells a single move touches. A move updates at most 2*L cells per
-    /// direction over 4 directions; with the largest half-line length L=5 that is 40 cells.
-    using UpdateCache = std::array<SingleCellUpdateCache, 40>;
+    /// Per-move scratch for the cells a single move changes. The line walk covers at most 2*L
+    /// steps per direction over 4 directions; with the largest half-line length L=5 that is 40
+    /// walk slots. `touchedMask` has bit (step*4 + dir) set for every slot that recorded an
+    /// entry — only cells whose line pattern actually changed (cells whose full Pattern2x byte
+    /// is unchanged are skipped in move() and need no restore). Entries are stored compactly in
+    /// walk order, so undo() iterates the mask's set bits instead of re-walking every slot.
+    struct UpdateCache
+    {
+        uint64_t              touchedMask;
+        SingleCellUpdateCache cells[40];
+    };
 
     /// Per-direction line patterns of both colors, one byte per direction, cell-major.
     /// AoS so pcode() reads one 4-byte group; the whole array is 4 KB (L1-resident). Sized to
