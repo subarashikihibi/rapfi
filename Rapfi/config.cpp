@@ -64,7 +64,8 @@ float ScalingFactor = 200.0f;
 
 Eval          EVALS[RULE_NB + 1][PCODE_NB];
 Eval          EVALS_THREAT[RULE_NB + 1][THREAT_NB];
-Pattern4Score P4SCORES[RULE_NB + 1][PCODE_NB];
+Pattern4      PATTERN4[RULE_NB + 1][PCODE_NB];
+MoveScorePair P4SCORES[RULE_NB + 1][PCODE_NB];
 
 }  // namespace Evaluation
 

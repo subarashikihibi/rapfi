@@ -81,9 +81,9 @@ void fillPattern2xLUT(Pattern2x pattern2x[KeyCnt<R>]);
 template <bool Forbid>
 Pattern4 getPattern4(Pattern p1, Pattern p2, Pattern p3, Pattern p4);
 
-/// Fill a (pattern code -> Pattern4 score) lookup table.
+/// Fill a (pattern code -> Pattern4) lookup table.
 template <bool Forbid>
-void fillPattern4LUT(Pattern4Score p4Score[PCODE_NB]);
+void fillPattern4LUT(Pattern4 p4Table[PCODE_NB]);
 
 /// Fill the (four line patterns -> pattern code) lookup table, assigning each unordered
 /// combination of four patterns a dense, order-independent code.
@@ -114,10 +114,10 @@ uint8_t     DEFENCERenju[KeyCnt<RENJU>][2];
     fillPattern2xLUT<STANDARD>(PATTERN2xStandard);
     fillPattern2xLUT<RENJU>(PATTERN2xRenju);
 
-    fillPattern4LUT<false>(Evaluation::P4SCORES[FREESTYLE]);
-    fillPattern4LUT<false>(Evaluation::P4SCORES[STANDARD]);
-    fillPattern4LUT<true>(Evaluation::P4SCORES[RENJU + BLACK]);
-    fillPattern4LUT<false>(Evaluation::P4SCORES[RENJU + WHITE]);
+    fillPattern4LUT<false>(Evaluation::PATTERN4[FREESTYLE]);
+    fillPattern4LUT<false>(Evaluation::PATTERN4[STANDARD]);
+    fillPattern4LUT<true>(Evaluation::PATTERN4[RENJU + BLACK]);
+    fillPattern4LUT<false>(Evaluation::PATTERN4[RENJU + WHITE]);
 
     fillDefenceLUT<FREESTYLE>(DEFENCE);
     fillDefenceLUT<STANDARD>(DEFENCEStandard);
@@ -412,14 +412,14 @@ Pattern4 getPattern4(Pattern p1, Pattern p2, Pattern p3, Pattern p4)
 }
 
 template <bool Forbid>
-void fillPattern4LUT(Pattern4Score p4Score[PCODE_NB])
+void fillPattern4LUT(Pattern4 p4Table[PCODE_NB])
 {
     for (int i = 0; i < PATTERN_NB; i++)
         for (int j = 0; j < PATTERN_NB; j++)
             for (int m = 0; m < PATTERN_NB; m++)
                 for (int n = 0; n < PATTERN_NB; n++) {
                     PatternCode pcode = PatternConfig::PCODE[i][j][m][n];
-                    p4Score[pcode] =
+                    p4Table[pcode] =
                         getPattern4<Forbid>((Pattern)i, (Pattern)j, (Pattern)m, (Pattern)n);
                 }
 }

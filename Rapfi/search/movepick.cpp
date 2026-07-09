@@ -292,15 +292,15 @@ void MovePicker::scoreAllMoves()
             maxPolicyScore       = std::max(maxPolicyScore, m.rawScore);
         }
         else {
-            // Scores are no longer cached on the cell: recompute from the pattern codes.
-            // Same P4SCORES entries move() reads, so values are identical to the old cache.
-            Pattern4Score p4ScoreBlack =
-                Evaluation::getP4Score(rule, BLACK, board.pcode<BLACK>(m.pos));
-            Pattern4Score p4ScoreWhite =
-                Evaluation::getP4Score(rule, WHITE, board.pcode<WHITE>(m.pos));
+            // Scores are not cached on the cell: recompute from the pattern codes.
+            // Same P4SCORES entries the old per-cell cache held, so values are identical.
+            MoveScorePair scoreBlack =
+                Evaluation::getMoveScorePair(rule, BLACK, board.pcode<BLACK>(m.pos));
+            MoveScorePair scoreWhite =
+                Evaluation::getMoveScorePair(rule, WHITE, board.pcode<WHITE>(m.pos));
             Score scores[SIDE_NB] = {
-                Score(p4ScoreBlack.scoreSelf() + p4ScoreWhite.scoreOppo()),
-                Score(p4ScoreWhite.scoreSelf() + p4ScoreBlack.scoreOppo()),
+                Score(scoreBlack.self + scoreWhite.oppo),
+                Score(scoreWhite.self + scoreBlack.oppo),
             };
             if constexpr (bool(Type & BALANCED))
                 m.score = m.rawScore = scores[self];

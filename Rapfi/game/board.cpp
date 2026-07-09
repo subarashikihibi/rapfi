@@ -181,8 +181,8 @@ void Board::newGame()
         }
 
         PatternCode pcodeBlack = pcode<BLACK>(pos), pcodeWhite = pcode<WHITE>(pos);
-        Pattern4    p4Black    = (Pattern4)Evaluation::getP4Score(R, BLACK, pcodeBlack);
-        Pattern4    p4White    = (Pattern4)Evaluation::getP4Score(R, WHITE, pcodeWhite);
+        Pattern4    p4Black    = Evaluation::getPattern4(R, BLACK, pcodeBlack);
+        Pattern4    p4White    = Evaluation::getPattern4(R, WHITE, pcodeWhite);
         pattern4x2[pos]        = uint8_t(p4Black) | uint8_t(p4White) << 4;
         st.p4Count[BLACK][p4Black]++;
         st.p4Count[WHITE][p4White]++;
@@ -307,8 +307,8 @@ void Board::move(Pos pos)
                     - Evaluation::getValueBlack(R, rowBlack[oldBlack], rowWhite[oldWhite]);
             }
 
-            Pattern4 p4Black = (Pattern4)Evaluation::getP4Score(R, BLACK, pcodeBlack);
-            Pattern4 p4White = (Pattern4)Evaluation::getP4Score(R, WHITE, pcodeWhite);
+            Pattern4 p4Black = Evaluation::getPattern4(R, BLACK, pcodeBlack);
+            Pattern4 p4White = Evaluation::getPattern4(R, WHITE, pcodeWhite);
             st.p4Count[BLACK][p4Pair & 0xF]--;
             st.p4Count[WHITE][p4Pair >> 4]--;
             st.p4Count[BLACK][p4Black]++;
@@ -532,10 +532,9 @@ bool Board::checkForbiddenPoint(Pos pos) const
 
 Score Board::score(Rule rule, Pos pos, Color side) const
 {
-    Pattern4Score p4ScoreBlack = Evaluation::getP4Score(rule, BLACK, pcode<BLACK>(pos));
-    Pattern4Score p4ScoreWhite = Evaluation::getP4Score(rule, WHITE, pcode<WHITE>(pos));
-    return side == BLACK ? p4ScoreBlack.scoreSelf() + p4ScoreWhite.scoreOppo()
-                         : p4ScoreWhite.scoreSelf() + p4ScoreBlack.scoreOppo();
+    MoveScorePair scoreBlack = Evaluation::getMoveScorePair(rule, BLACK, pcode<BLACK>(pos));
+    MoveScorePair scoreWhite = Evaluation::getMoveScorePair(rule, WHITE, pcode<WHITE>(pos));
+    return side == BLACK ? scoreBlack.self + scoreWhite.oppo : scoreWhite.self + scoreBlack.oppo;
 }
 
 Pos Board::getLastActualMoveOfSide(Color side) const
