@@ -179,13 +179,16 @@ void Board::newGame()
             assert(p2x[dir].patBlack <= F1 && p2x[dir].patWhite <= F1);
         }
 
-        PatternCode pcodeBlack = pcode<BLACK>(pos), pcodeWhite = pcode<WHITE>(pos);
-        Pattern4    p4Black    = Evaluation::getPattern4(R, BLACK, pcodeBlack);
-        Pattern4    p4White    = Evaluation::getPattern4(R, WHITE, pcodeWhite);
-        pattern4x2[pos]        = uint8_t(p4Black) | uint8_t(p4White) << 4;
+        PatternConfig::PCodeP4 cpBlack = PatternConfig::pcodeTable<R, BLACK>()
+            [p2x[0].patBlack][p2x[1].patBlack][p2x[2].patBlack][p2x[3].patBlack];
+        PatternConfig::PCodeP4 cpWhite = PatternConfig::pcodeTable<R, WHITE>()
+            [p2x[0].patWhite][p2x[1].patWhite][p2x[2].patWhite][p2x[3].patWhite];
+        Pattern4 p4Black = cpBlack.pattern4();
+        Pattern4 p4White = cpWhite.pattern4();
+        pattern4x2[pos]  = uint8_t(p4Black) | uint8_t(p4White) << 4;
         st.p4Count[BLACK][p4Black]++;
         st.p4Count[WHITE][p4White]++;
-        valueBlack += Evaluation::getValueBlack(R, pcodeBlack, pcodeWhite);
+        valueBlack += Evaluation::getValueBlack(R, cpBlack.pcode(), cpWhite.pcode());
     }
     st.valueBlack = valueBlack;
     st.candArea   = CandArea();
@@ -305,29 +308,31 @@ void Board::move(Pos pos)
 
             p2x[dir] = newP2x;
 
-            // PCODE is order-independent, so index it with the changed direction last:
-            // the three unchanged directions give one base row per color, and the old and
-            // new pcode are two loads from that same 16-entry row.
-            const int          d1 = (dir + 1) & 3, d2 = (dir + 2) & 3, d3 = (dir + 3) & 3;
-            const PatternCode *rowBlack =
-                PatternConfig::PCODE[p2x[d1].patBlack][p2x[d2].patBlack][p2x[d3].patBlack];
-            const PatternCode *rowWhite =
-                PatternConfig::PCODE[p2x[d1].patWhite][p2x[d2].patWhite][p2x[d3].patWhite];
+            // PCODE rows are order-independent, so index them with the changed direction
+            // last: the three unchanged directions give one base row per color, and the old
+            // and new entries are two loads from that same 16-entry row. The fused entries
+            // already carry their Pattern4, so no dependent PATTERN4-by-pcode load is needed
+            // (renju black reads the forbid-marking table variant).
+            const int d1 = (dir + 1) & 3, d2 = (dir + 2) & 3, d3 = (dir + 3) & 3;
+            const PatternConfig::PCodeP4 *rowBlack = PatternConfig::pcodeTable<R, BLACK>()
+                [p2x[d1].patBlack][p2x[d2].patBlack][p2x[d3].patBlack];
+            const PatternConfig::PCodeP4 *rowWhite = PatternConfig::pcodeTable<R, WHITE>()
+                [p2x[d1].patWhite][p2x[d2].patWhite][p2x[d3].patWhite];
 
-            PatternCode pcodeBlack = rowBlack[newP2x.patBlack];
-            PatternCode pcodeWhite = rowWhite[newP2x.patWhite];
+            PatternConfig::PCodeP4 cpBlack = rowBlack[newP2x.patBlack];
+            PatternConfig::PCodeP4 cpWhite = rowWhite[newP2x.patWhite];
 
             if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
                 // The old value is no longer cached on the cell: rebuild it from the old
                 // pcodes (same-row loads) so the incremental sum stays bit-identical.
-                deltaValueBlack += Evaluation::getValueBlack(R, pcodeBlack, pcodeWhite)
+                deltaValueBlack += Evaluation::getValueBlack(R, cpBlack.pcode(), cpWhite.pcode())
                                    - Evaluation::getValueBlack(R,
-                                                               rowBlack[oldP2x.patBlack],
-                                                               rowWhite[oldP2x.patWhite]);
+                                                               rowBlack[oldP2x.patBlack].pcode(),
+                                                               rowWhite[oldP2x.patWhite].pcode());
             }
 
-            Pattern4 p4Black = Evaluation::getPattern4(R, BLACK, pcodeBlack);
-            Pattern4 p4White = Evaluation::getPattern4(R, WHITE, pcodeWhite);
+            Pattern4 p4Black = cpBlack.pattern4();
+            Pattern4 p4White = cpWhite.pattern4();
             st.p4Count[BLACK][p4Pair & 0xF]--;
             st.p4Count[WHITE][p4Pair >> 4]--;
             st.p4Count[BLACK][p4Black]++;

@@ -138,9 +138,47 @@ alignas(64) inline constexpr auto HALF_CODE_HI_S =
 alignas(64) extern Pattern2x PATTERN2x[DenseKeyCnt<FREESTYLE>];
 alignas(64) extern Pattern2x PATTERN2xStandard[DenseKeyCnt<STANDARD>];
 alignas(64) extern Pattern2x PATTERN2xRenju[DenseKeyCnt<RENJU>];
-/// The four line patterns around a cell (one per direction) -> a single packed pattern code,
-/// order-independent so the four directions can be supplied in any order.
-extern PatternCode PCODE[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB];
+
+/// Bits a PatternCode occupies inside a fused PCodeP4 entry. PCODE_NB (3876, see
+/// eval/scoretables.h) fits in 12 bits and PATTERN4_NB (14) in the spare high nibble;
+/// both are static_asserted in pattern.cpp where PCODE_NB is visible.
+constexpr int PCODE_BITS = 12;
+
+/// One entry of the pattern-code tables: the order-independent four-direction pattern code
+/// in the low PCODE_BITS bits, and the same four patterns' aggregate Pattern4 in the spare
+/// high bits — one table load yields both, removing the dependent PATTERN4-by-pcode lookup
+/// from Board::move()'s inner loop.
+struct PCodeP4
+{
+    uint16_t raw;
+
+    PatternCode pcode() const { return raw & ((1u << PCODE_BITS) - 1); }
+    Pattern4    pattern4() const { return Pattern4(raw >> PCODE_BITS); }
+};
+static_assert(sizeof(PCodeP4) == sizeof(uint16_t));
+
+/// The four line patterns around a cell (one per direction) -> the packed pattern code plus
+/// aggregate Pattern4, order-independent so the four directions can be supplied in any order.
+/// The pcode bits are identical in both tables; only the Pattern4 nibble differs: PCODE
+/// classifies without renju forbidden points (freestyle, standard and renju-white are
+/// byte-identical there, so they share it), PCODERenjuBlack marks forbidden combinations
+/// (overline / double-four / double-three) as FORBID.
+alignas(64) extern PCodeP4 PCODE[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB];
+alignas(64) extern PCodeP4 PCODERenjuBlack[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB];
+
+/// Select the pattern-code table whose Pattern4 nibble matches rule R and color C (renju
+/// black is the only combination whose Pattern4 marks forbidden points). Callers that only
+/// consume the pcode bits can read PCODE directly for any rule/color.
+template <Rule R, Color C>
+inline const auto &pcodeTable()
+{
+    static_assert(C == BLACK || C == WHITE);
+    if constexpr (R == Rule::RENJU && C == BLACK)
+        return PCODERenjuBlack;
+    else
+        return PCODE;
+}
+
 /// Dense line code + attacking color -> bitmask of cells that defend against the attack.
 alignas(64) extern uint8_t DEFENCE[DenseKeyCnt<FREESTYLE>][2];
 alignas(64) extern uint8_t DEFENCEStandard[DenseKeyCnt<STANDARD>][2];

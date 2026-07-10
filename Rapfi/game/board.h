@@ -207,7 +207,8 @@ public:
         return side == BLACK ? pattern2xs[pos][dir].patBlack : pattern2xs[pos][dir].patWhite;
     }
 
-    /// Combined four-direction pattern code at pos for one side.
+    /// Combined four-direction pattern code at pos for one side. The pcode bits are
+    /// identical in every fused table variant, so this always reads PCODE.
     template <Color C>
     inline PatternCode pcode(Pos pos) const
     {
@@ -216,10 +217,12 @@ public:
         const Pattern2x *p2x = pattern2xs[pos];
         if constexpr (C == BLACK)
             return PatternConfig::PCODE[p2x[0].patBlack][p2x[1].patBlack][p2x[2].patBlack]
-                                       [p2x[3].patBlack];
+                                       [p2x[3].patBlack]
+                .pcode();
         else
             return PatternConfig::PCODE[p2x[0].patWhite][p2x[1].patWhite][p2x[2].patWhite]
-                                       [p2x[3].patWhite];
+                                       [p2x[3].patWhite]
+                .pcode();
     }
 
     /// Both sides' combined four-direction pattern codes at pos (black first). Loads the
@@ -238,8 +241,8 @@ public:
         std::memcpy(&b, &bb, 1);
         std::memcpy(&c, &cb, 1);
         std::memcpy(&d, &db, 1);
-        return {PatternConfig::PCODE[a.patBlack][b.patBlack][c.patBlack][d.patBlack],
-                PatternConfig::PCODE[a.patWhite][b.patWhite][c.patWhite][d.patWhite]};
+        return {PatternConfig::PCODE[a.patBlack][b.patBlack][c.patBlack][d.patBlack].pcode(),
+                PatternConfig::PCODE[a.patWhite][b.patWhite][c.patWhite][d.patWhite].pcode()};
     }
 
     /// Check if the pos is in the region of current board size.

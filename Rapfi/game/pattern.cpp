@@ -82,13 +82,12 @@ void fillPattern2xLUT(Pattern2x pattern2x[DenseKeyCnt<R>]);
 template <bool Forbid>
 Pattern4 getPattern4(Pattern p1, Pattern p2, Pattern p3, Pattern p4);
 
-/// Fill a (pattern code -> Pattern4) lookup table.
+/// Fill a (four line patterns -> fused pattern code + Pattern4) lookup table, assigning each
+/// unordered combination of four patterns a dense, order-independent code.
+/// @tparam Forbid Whether the fused Pattern4 nibble flags renju forbidden points.
 template <bool Forbid>
-void fillPattern4LUT(Pattern4 p4Table[PCODE_NB]);
-
-/// Fill the (four line patterns -> pattern code) lookup table, assigning each unordered
-/// combination of four patterns a dense, order-independent code.
-void fillPatternCodeLUT(PatternCode pcode[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB]);
+void fillPatternCodeLUT(
+    PatternConfig::PCodeP4 pcode[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB]);
 
 /// Fill a (dense line code + attacker -> defence-move bitmask) lookup table.
 template <Rule R>
@@ -98,27 +97,28 @@ void fillDefenceLUT(uint8_t defence[DenseKeyCnt<R>][2]);
 
 namespace PatternConfig {
 
+// The fused-entry bit budget: the pcode field must hold every code, the high nibble every
+// Pattern4. (Asserted here because PCODE_NB lives in eval/scoretables.h.)
+static_assert(PCODE_NB <= (1u << PCODE_BITS), "pattern code must fit in PCODE_BITS");
+static_assert(PATTERN4_NB <= (1 << (16 - PCODE_BITS)), "Pattern4 must fit in the spare bits");
+
 alignas(64) Pattern2x PATTERN2x[DenseKeyCnt<FREESTYLE>];
 alignas(64) Pattern2x PATTERN2xStandard[DenseKeyCnt<STANDARD>];
 alignas(64) Pattern2x PATTERN2xRenju[DenseKeyCnt<RENJU>];
-PatternCode           PCODE[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB];
+alignas(64) PCodeP4   PCODE[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB];
+alignas(64) PCodeP4   PCODERenjuBlack[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB];
 alignas(64) uint8_t   DEFENCE[DenseKeyCnt<FREESTYLE>][2];
 alignas(64) uint8_t   DEFENCEStandard[DenseKeyCnt<STANDARD>][2];
 alignas(64) uint8_t   DEFENCERenju[DenseKeyCnt<RENJU>][2];
 
-// Populate every lookup table before main() runs. PCODE must come first because fillPattern4LUT
-// reads it to map each pattern combination to its dense code.
+// Populate every lookup table before main() runs.
 [[maybe_unused]] static const bool init = []() {
-    fillPatternCodeLUT(PCODE);
+    fillPatternCodeLUT<false>(PCODE);
+    fillPatternCodeLUT<true>(PCODERenjuBlack);
 
     fillPattern2xLUT<FREESTYLE>(PATTERN2x);
     fillPattern2xLUT<STANDARD>(PATTERN2xStandard);
     fillPattern2xLUT<RENJU>(PATTERN2xRenju);
-
-    fillPattern4LUT<false>(Evaluation::PATTERN4[FREESTYLE]);
-    fillPattern4LUT<false>(Evaluation::PATTERN4[STANDARD]);
-    fillPattern4LUT<true>(Evaluation::PATTERN4[RENJU + BLACK]);
-    fillPattern4LUT<false>(Evaluation::PATTERN4[RENJU + WHITE]);
 
     fillDefenceLUT<FREESTYLE>(DEFENCE);
     fillDefenceLUT<STANDARD>(DEFENCEStandard);
@@ -459,19 +459,8 @@ Pattern4 getPattern4(Pattern p1, Pattern p2, Pattern p3, Pattern p4)
 }
 
 template <bool Forbid>
-void fillPattern4LUT(Pattern4 p4Table[PCODE_NB])
-{
-    for (int i = 0; i < PATTERN_NB; i++)
-        for (int j = 0; j < PATTERN_NB; j++)
-            for (int m = 0; m < PATTERN_NB; m++)
-                for (int n = 0; n < PATTERN_NB; n++) {
-                    PatternCode pcode = PatternConfig::PCODE[i][j][m][n];
-                    p4Table[pcode] =
-                        getPattern4<Forbid>((Pattern)i, (Pattern)j, (Pattern)m, (Pattern)n);
-                }
-}
-
-void fillPatternCodeLUT(PatternCode pcode[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB])
+void fillPatternCodeLUT(
+    PatternConfig::PCodeP4 pcode[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB])
 {
     constexpr int N = PATTERN_NB;
 
@@ -490,19 +479,25 @@ void fillPatternCodeLUT(PatternCode pcode[PATTERN_NB][PATTERN_NB][PATTERN_NB][PA
             std::swap(b, c);
     };
 
-    // Pass 1: hand each non-decreasing 4-tuple a dense code in lexicographic order. This is exactly
-    // the order in which canonical representatives first appear when scanning all N^4 tuples by
-    // linear index, so the resulting mapping is identical to the historical O(N^8) construction.
+    // Pass 1: hand each non-decreasing 4-tuple a dense code in lexicographic order, fused with
+    // the tuple's aggregate Pattern4 in the high bits. The code order is exactly the order in
+    // which canonical representatives first appear when scanning all N^4 tuples by linear index,
+    // so the pcode mapping is identical to the historical O(N^8) construction.
     PatternCode code = 0;
     for (int a = 0; a < N; a++)
         for (int b = a; b < N; b++)
             for (int c = b; c < N; c++)
-                for (int d = c; d < N; d++)
-                    pcode[a][b][c][d] = code++;
+                for (int d = c; d < N; d++) {
+                    Pattern4 p4 =
+                        getPattern4<Forbid>((Pattern)a, (Pattern)b, (Pattern)c, (Pattern)d);
+                    pcode[a][b][c][d].raw =
+                        uint16_t(code++ | uint16_t(p4) << PatternConfig::PCODE_BITS);
+                }
 
-    // Pass 2: every ordering of four patterns inherits its sorted representative's code. Safe
-    // in place: only sorted slots (finalized in pass 1) are read; a sorted slot just re-stores
-    // its own code.
+    // Pass 2: every ordering of four patterns inherits its sorted representative's entry (both
+    // the code and the Pattern4 are functions of the multiset, so the whole fused entry is
+    // shared). Safe in place: only sorted slots (finalized in pass 1) are read; a sorted slot
+    // just re-stores its own entry.
     for (int i = 0; i < N; i++)
         for (int j = 0; j < N; j++)
             for (int m = 0; m < N; m++)

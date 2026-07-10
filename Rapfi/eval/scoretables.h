@@ -29,12 +29,12 @@
 /// Classical evaluation tables and the engine's value scale.
 ///
 /// This is the query surface of the classical (pattern-based) evaluation: the
-/// EVALS/EVALS_THREAT/PATTERN4/P4SCORES tables with their inline lookups, and the
+/// EVALS/EVALS_THREAT/P4SCORES tables with their inline lookups, and the
 /// value <-> winning-rate conversion that defines the meaning of Value across
 /// the engine. It is split out of config.h so that hot-path consumers
 /// (game/board.h, eval/) do not pull in the whole config surface; the tables
-/// are still populated by config.cpp (model loading), game/pattern.cpp
-/// (pattern4 LUT) and tuning/tuner.cpp (offline tuning).
+/// are still populated by config.cpp (model loading) and tuning/tuner.cpp
+/// (offline tuning).
 
 /// Total count of patterncode (pattern combination for 4 directions)
 constexpr uint32_t PCODE_NB = combineNumber(PATTERN_NB, 4);
@@ -71,15 +71,13 @@ extern float ScalingFactor;
 
 /// Eval and score tables. Renju is asymmetric, so it gets separate black/white
 /// tables and the arrays have one extra slot; index them via tableIndex().
-/// PATTERN4 is kept separate from P4SCORES on purpose: newGame()/move() need
-/// only the pattern4 byte (in every MoveType, including the NO_EVAL probing
-/// paths), so its table is 4x denser (one slot = PCODE_NB bytes, ~61 cache
-/// lines) and stays L1-resident, while the scores are only read by move
-/// ordering. Unlike the old 14-bit bitfields, stored scores keep full int16
-/// precision (the old narrowing was an artifact of the bundled struct).
+/// These hold learned weights, so all four slots are real; the (pcode ->
+/// Pattern4) classification is rule logic instead and lives fused inside the
+/// PatternConfig::PCODE tables' spare high bits, not here. Unlike the old
+/// 14-bit bitfields, stored scores keep full int16 precision (the old
+/// narrowing was an artifact of the bundled struct).
 extern Eval          EVALS[RULE_NB + 1][PCODE_NB];
 extern Eval          EVALS_THREAT[RULE_NB + 1][THREAT_NB];
-extern Pattern4      PATTERN4[RULE_NB + 1][PCODE_NB];
 extern MoveScorePair P4SCORES[RULE_NB + 1][PCODE_NB];
 
 /// Get table index for rule and color.
@@ -94,12 +92,6 @@ inline Value getValueBlack(Rule R, PatternCode pcodeBlack, PatternCode pcodeWhit
     Value valueBlack = (Value)EVALS[tableIndex(R, BLACK)][pcodeBlack];
     Value valueWhite = (Value)EVALS[tableIndex(R, WHITE)][pcodeWhite];
     return valueBlack - valueWhite;
-}
-
-/// Lookup the aggregated four-direction pattern with color and pcode of rule R.
-inline Pattern4 getPattern4(Rule R, Color C, PatternCode pcode)
-{
-    return PATTERN4[tableIndex(R, C)][pcode];
 }
 
 /// Lookup the move-ordering score table with color and pcode of rule R.
