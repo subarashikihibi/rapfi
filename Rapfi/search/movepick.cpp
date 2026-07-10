@@ -294,10 +294,9 @@ void MovePicker::scoreAllMoves()
         else {
             // Scores are not cached on the cell: recompute from the pattern codes.
             // Same P4SCORES entries the old per-cell cache held, so values are identical.
-            MoveScorePair scoreBlack =
-                Evaluation::getMoveScorePair(rule, BLACK, board.pcode<BLACK>(m.pos));
-            MoveScorePair scoreWhite =
-                Evaluation::getMoveScorePair(rule, WHITE, board.pcode<WHITE>(m.pos));
+            const auto [pcodeBlack, pcodeWhite] = board.pcodePair(m.pos);
+            MoveScorePair scoreBlack = Evaluation::getMoveScorePair(rule, BLACK, pcodeBlack);
+            MoveScorePair scoreWhite = Evaluation::getMoveScorePair(rule, WHITE, pcodeWhite);
             Score scores[SIDE_NB] = {
                 Score(scoreBlack.self + scoreWhite.oppo),
                 Score(scoreWhite.self + scoreBlack.oppo),

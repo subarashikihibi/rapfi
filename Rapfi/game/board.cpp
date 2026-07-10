@@ -352,8 +352,8 @@ void Board::move(Pos pos)
     // that were folded in above. Its pattern2x entries are frozen at their valid empty-cell
     // state (the walk skips i == 0), so the stale value is rebuilt from its pcodes.
     if constexpr (MT == MoveType::NORMAL || MT == MoveType::NO_EVALUATOR) {
-        st.valueBlack += deltaValueBlack
-                         - Evaluation::getValueBlack(R, pcode<BLACK>(pos), pcode<WHITE>(pos));
+        const auto [pcodeBlack, pcodeWhite] = pcodePair(pos);
+        st.valueBlack += deltaValueBlack - Evaluation::getValueBlack(R, pcodeBlack, pcodeWhite);
     }
     st.p4Count[BLACK][pattern4x2[pos] & 0xF]--;
     st.p4Count[WHITE][pattern4x2[pos] >> 4]--;

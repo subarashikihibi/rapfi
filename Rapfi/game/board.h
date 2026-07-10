@@ -28,8 +28,10 @@
 #include "pattern.h"
 
 #include <cassert>
+#include <cstring>
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace Search {
 class SearchThread;
@@ -218,6 +220,26 @@ public:
         else
             return PatternConfig::PCODE[p2x[0].patWhite][p2x[1].patWhite][p2x[2].patWhite]
                                        [p2x[3].patWhite];
+    }
+
+    /// Both sides' combined four-direction pattern codes at pos (black first). Loads the
+    /// 4-byte pattern2xs row once and extracts the four Pattern2x bytes from the register,
+    /// so the two PCODE lookups share one row load instead of issuing four byte loads
+    /// each. Values are identical to pcode<BLACK>() / pcode<WHITE>().
+    inline std::pair<PatternCode, PatternCode> pcodePair(Pos pos) const
+    {
+        assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
+        uint32_t row;
+        std::memcpy(&row, pattern2xs[pos], sizeof(row));
+        Pattern2x a, b, c, d;
+        uint8_t   ab = uint8_t(row), bb = uint8_t(row >> 8), cb = uint8_t(row >> 16),
+                db = uint8_t(row >> 24);
+        std::memcpy(&a, &ab, 1);
+        std::memcpy(&b, &bb, 1);
+        std::memcpy(&c, &cb, 1);
+        std::memcpy(&d, &db, 1);
+        return {PatternConfig::PCODE[a.patBlack][b.patBlack][c.patBlack][d.patBlack],
+                PatternConfig::PCODE[a.patWhite][b.patWhite][c.patWhite][d.patWhite]};
     }
 
     /// Check if the pos is in the region of current board size.
