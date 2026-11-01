@@ -16,7 +16,6 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../../config.h"
 #include "../../core/iohelper.h"
 #include "../../eval/eval.h"
 #include "../../eval/evaluator.h"
@@ -83,10 +82,9 @@ Value vcf(Rule rule, Board &board, int ply)
 template <Rule Rule>
 Value vcfsearch(Board &board, SearchStack *ss, int ply, Value alpha, Value beta, Depth depth)
 {
-    Color                self = board.sideToMove(), oppo = ~self;
+    Color                self = board.sideToMove();
     SearchThread        *thisThread = board.thisThread();
     const SearchOptions &options    = thisThread->options();
-    int                  moveCount  = 0;
     Value                bestValue  = -VALUE_INFINITE;
     Value                oldAlpha   = alpha;  // Flag BOUND_EXACT when value above alpha in PVNode
     Pos                  bestMove   = Pos::NONE;
@@ -218,8 +216,8 @@ Value vcfdefend(Board &board, SearchStack *ss, int ply, Value alpha, Value beta,
         ss[ply].moveP4[BLACK] = board.pattern4(move, BLACK);
         ss[ply].moveP4[WHITE] = board.pattern4(move, WHITE);
 
+        TT.prefetch(board.zobristKeyAfter(move));  // pre-make, overlaps the board update
         board.move<Rule, Board::MoveType::NO_EVAL>(move);
-        TT.prefetch(board.zobristKey());
 
         // Call attack-side vcf search
         // Note that we do not reduce depth for vcf defence move.
@@ -306,8 +304,9 @@ std::pair<Node *, bool> allocateOrFindNode(MCTSSearcher &searcher, HashKey hash)
 
 /// select: select the best child node according to the selection value
 /// @param node The node to select child from, must be already expanded
-/// @return A pair of (the non-null best child edge pointer, the child node pointer)
+/// @return A pair of (the best child edge pointer, the child node pointer)
 ///   The child node pointer is nullptr if the edge is unexplored (has zero visit).
+///   At root, the edge pointer is nullptr if no edge is in the root move list.
 template <bool Root>
 std::pair<Edge *, Node *> selectChild(Node &node, const Board &board)
 {
@@ -398,7 +397,10 @@ std::pair<Edge *, Node *> selectChild(Node &node, const Board &board)
         }
     }
 
-    assert(bestEdge);
+    // At root, every edge may be excluded from the root move list (e.g. when
+    // all generated moves are blocked), in which case no edge is selectable
+    // and a null edge is returned. For non-root nodes the edge is non-null.
+    assert(Root || bestEdge);
     return {bestEdge, bestNode};
 }
 
@@ -426,8 +428,7 @@ bool expandNode(Node &node, const SearchOptions &options, const Board &board, in
                       board,
                       MovePicker::ExtraArgs<MovePicker::MAIN> {
                           Pos::NONE,
-                          nullptr,
-                          nullptr,
+                          {},
                           true,
                           PolicyTemperature,
                       });
@@ -444,7 +445,10 @@ bool expandNode(Node &node, const SearchOptions &options, const Board &board, in
                     terminalValue = getDrawValue(board, options, board.ply());
             }
 
-            node.setTerminal(terminalValue);
+            // Multiple threads may concurrently discover that this leaf has
+            // no valid move; the transition to a terminal node is one-shot
+            // and preserves the visits the node has already accumulated.
+            node.tryMarkTerminal(terminalValue);
         }
         else {
             assert(!node.isLeaf());
@@ -545,6 +549,16 @@ uint32_t searchNode(Node &node, Board &board, int ply, uint32_t newVisits)
     while (!stopThisPlayout && newVisits > 0) {
         // Select the best edge to explore
         auto [childEdge, childNode] = selectChild<Root>(node, board);
+
+        // When no root edge is in the root move list, no playout can make
+        // any progress, so stop the search gracefully and let the bestmove
+        // selection fall back to the root move list.
+        if constexpr (Root) {
+            if (!childEdge) {
+                thisThread->engine.stopThinking();
+                break;
+            }
+        }
 
         // Make the move to reach the child node
         Pos move = childEdge->getMove();
@@ -647,7 +661,10 @@ std::tuple<int, float, ValueBound> computeSelectionValues(const Node            
         float childPolicy    = childEdge.getP();
         float selectionValue = 2.0f * childPolicy;
 
-        assert(childNode->getVisits() > 0);
+        // A linked child may still be mid-evaluation on another thread (the
+        // child pointer is published before its first visit completes), so
+        // zero node visits is a legal transient state here; the edge-visit
+        // guard below keeps such children out of the visit weighting.
         uint32_t childVisits = childEdge.getVisits();
         // Skip zero visits children
         if (childVisits > 0) {
@@ -1238,8 +1255,7 @@ void MCTSSearcher::updateRootMovesData(SearchThread &th)
 
     std::vector<uint32_t> edgeIndices;
     std::vector<float>    selectionValues, lcbValues;
-    int                   bestChildIndex =
-        selectBestmoveOfChildNode(*graph.root, edgeIndices, selectionValues, lcbValues, true);
+    selectBestmoveOfChildNode(*graph.root, edgeIndices, selectionValues, lcbValues, true);
     uint32_t maxNumRootMovesToPrint =
         std::max<uint32_t>(th.options().multiPV, SearchCfg.maxNonPVRootmovesToPrint);
 

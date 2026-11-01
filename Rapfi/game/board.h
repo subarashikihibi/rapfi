@@ -22,7 +22,6 @@
 #include "../core/platform.h"
 #include "../core/pos.h"
 #include "../core/types.h"
-#include "../eval/scoretables.h"
 #include "bitboard.h"
 #include "candarea.h"
 #include "pattern.h"
@@ -74,13 +73,12 @@ class Evaluator;
 
 /// Per-ply snapshot of the incremental board state. One StateInfo exists per move played, so a
 /// move only has to record what changed and undo() can restore the previous ply cheaply. The
-/// candidate-move set is NOT copied per ply: it lives board-level (Board::candidatesBB) and is
-/// rewound through the candidate journal, anchored here by `journalStart`.
+/// candidate set lives on Board and is rewound through a journal anchored by `journalStart`.
 struct StateInfo
 {
-    uint32_t journalStart;  ///< First candidate-journal entry belonging to this ply.
+    uint32_t journalStart;  ///< First candidate-journal entry owned by this ply.
     CandArea candArea;      ///< Bounding box of candidate cells at this ply.
-    Pos      lastMove;      ///< The move that produced this ply (Pos::PASS for a pass).
+    Pos      lastMove;      ///< Move that produced this ply (Pos::PASS for a pass).
     /// Move that first created a flex four for this side (set only on a 0 -> nonzero transition).
     Pos lastFlex4AttackMove[SIDE_NB];
     /// Most recent empty cell reaching C_BLOCK4_FLEX3 / B_FLEX4 / A_FIVE, per side.
@@ -96,13 +94,20 @@ struct StateInfo
         assert(p4 >= C_BLOCK4_FLEX3 && p4 <= A_FIVE);
         return lastPattern4Move[side][p4 - C_BLOCK4_FLEX3];
     }
+
+    /// Record pos as the most recent cell reaching p4, if p4 is a tactical pattern.
+    void setLastPattern4(Color side, Pattern4 p4, Pos pos)
+    {
+        if (p4 >= C_BLOCK4_FLEX3)
+            lastPattern4Move[side][p4 - C_BLOCK4_FLEX3] = pos;
+    }
 };
 
-/// The central board-position representation. Per-cell state lives in flat SoA arrays (per-
-/// direction line patterns plus packed pattern4 nibbles); occupancy is decoded straight from the
-/// per-direction bitkeys, and a per-ply StateInfo/UpdateCache history lets move() and undo()
-/// update the position incrementally rather than rescanning the board. The copy constructor is
-/// explicit (and the implicit copy deleted) to avoid accidental expensive copies.
+/// The central board-position representation. Per-cell patterns live in separate compact arrays,
+/// occupancy in bitboards, and directional line state in bitkeys. Per-ply StateInfo and restore
+/// records let move() and undo() update the position incrementally rather than rescanning the
+/// board. The copy constructor is explicit (and the implicit copy deleted) to avoid accidental
+/// expensive copies.
 class Board
 {
 public:
@@ -110,7 +115,8 @@ public:
     /// need, and must be paired (the same MT in the matching undo()).
     enum class MoveType {
         NORMAL,        ///< Update cell, pattern, score, classical eval, and external evaluator.
-        NO_EVALUATOR,  ///< As NORMAL but skip the external evaluator.
+        NO_EVALUATOR,  ///< As NORMAL but skip the external evaluator. Reserved for a future
+                       ///< search mode that relies on the classical eval only (no caller yet).
         NO_EVAL,       ///< Update cell, pattern and score only (no eval at all).
         NO_EVAL_MULTI  ///< As NO_EVAL, but do not flip the side to move.
     };
@@ -183,19 +189,15 @@ public:
     }
 
     /// Aggregate four-direction pattern of one side at pos. Occupied/wall cells return
-    /// their frozen (placement-time / zero) values — see the freeze invariant in the spec.
+    /// their frozen (placement-time / zero) values: move() never rewrites the pattern state
+    /// of a cell once a stone lands on it, and undo() restores it LIFO, so a stone's cell
+    /// keeps the exact patterns it had as an empty cell at placement time (the "freeze
+    /// invariant"; checkForbiddenPoint relies on it).
     inline Pattern4 pattern4(Pos pos, Color side) const
     {
         assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
         assert(side == BLACK || side == WHITE);
         return Pattern4((pattern4x2[pos] >> (4 * side)) & 0xF);
-    }
-
-    /// Both sides' packed pattern4 nibbles at pos (black low, white high).
-    inline uint8_t pattern4Pair(Pos pos) const
-    {
-        assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
-        return pattern4x2[pos];
     }
 
     /// Line-level pattern of one side at pos in direction dir.
@@ -218,11 +220,11 @@ public:
         if constexpr (C == BLACK)
             return PatternConfig::PCODE[p2x[0].patBlack][p2x[1].patBlack][p2x[2].patBlack]
                                        [p2x[3].patBlack]
-                .pcode();
+                                           .pcode();
         else
             return PatternConfig::PCODE[p2x[0].patWhite][p2x[1].patWhite][p2x[2].patWhite]
                                        [p2x[3].patWhite]
-                .pcode();
+                                           .pcode();
     }
 
     /// Both sides' combined four-direction pattern codes at pos (black first). Loads the
@@ -234,6 +236,7 @@ public:
         assert(pos >= 0 && pos < FULL_BOARD_CELL_COUNT);
         uint32_t row;
         std::memcpy(&row, pattern2xs[pos], sizeof(row));
+
         Pattern2x a, b, c, d;
         uint8_t   ab = uint8_t(row), bb = uint8_t(row >> 8), cb = uint8_t(row >> 16),
                 db = uint8_t(row >> 24);
@@ -241,6 +244,7 @@ public:
         std::memcpy(&b, &bb, 1);
         std::memcpy(&c, &cb, 1);
         std::memcpy(&d, &db, 1);
+
         return {PatternConfig::PCODE[a.patBlack][b.patBlack][c.patBlack][d.patBlack].pcode(),
                 PatternConfig::PCODE[a.patWhite][b.patWhite][c.patWhite][d.patWhite].pcode()};
     }
@@ -249,7 +253,7 @@ public:
     bool isInBoard(Pos pos) const { return pos.isInBoard(boardSize, boardSize); }
 
     /// Check if the pos is on an empty cell. Wall and occupied cells both read false.
-    /// @pos The pos to query, which is assumed to meet 'pos.valid() == true'.
+    /// @param pos The pos to query, which is assumed to meet 'pos.valid() == true'.
     bool isEmpty(Pos pos) const { return emptyBB.test(pos); }
 
     /// Check if the pos is legal (on an empty cell or is a pass move). The PASS check comes first
@@ -298,8 +302,8 @@ public:
     bool checkForbiddenPoint(Pos pos) const;
 
     /// Compute the move-ordering score of an empty cell on demand (cold-path helper; hot
-    /// callers batch the same lookups inline). Values are identical to the formerly cached
-    /// per-cell score: own attacking score plus the opponent's defensive score.
+    /// callers batch the same lookups inline): own attacking score plus the opponent's
+    /// defensive score.
     Score score(Rule rule, Pos pos, Color side) const;
 
     /// Query the bitkey at the given pos and direction.
@@ -393,24 +397,21 @@ public:
     std::string trace(Rule rule) const;
 
 private:
-    /// Saved per-cell state of one updated cell, so undo() can restore it without any
-    /// table lookup: the changed direction's line pattern byte plus both sides' pattern4
-    /// packed as nibbles (black low, white high).
-    struct SingleCellUpdateCache
+    /// State needed to restore one changed cell without table lookups.
+    struct CellRestore
     {
         Pattern2x pattern2x;     ///< Pre-update line pattern of the changed direction.
         uint8_t   pattern4Pair;  ///< Pre-update packed pattern4 nibbles (both sides).
     };
-    /// Per-move scratch for the cells a single move changes. The line walk covers at most 2*L
-    /// steps per direction over 4 directions; with the largest half-line length L=5 that is 40
-    /// walk slots. `touchedMask` has bit (step*4 + dir) set for every slot that recorded an
-    /// entry — only cells whose line pattern actually changed (cells whose full Pattern2x byte
-    /// is unchanged are skipped in move() and need no restore). Entries are stored compactly in
-    /// walk order, so undo() iterates the mask's set bits instead of re-walking every slot.
-    struct UpdateCache
+    /// A move walks at most 2*5 cells in each of four directions.
+    static constexpr int MAX_CELL_RESTORES = 40;
+
+    /// Compact restore record for one move. `touchedMask` maps each saved cell back to its
+    /// (step*4 + direction) walk slot; cells whose Pattern2x byte did not change are omitted.
+    struct MoveRestore
     {
-        uint64_t              touchedMask;
-        SingleCellUpdateCache cells[40];
+        uint64_t    touchedMask;
+        CellRestore cells[MAX_CELL_RESTORES];
     };
 
     /// Per-direction line patterns of both colors, one byte per direction, cell-major.
@@ -420,6 +421,12 @@ private:
     Pattern2x pattern2xs[FULL_BOARD_CELL_COUNT][4];
     /// Packed pattern4 nibbles per cell: black in the low nibble, white in the high one.
     uint8_t pattern4x2[FULL_BOARD_CELL_COUNT];
+
+    /// Pack both sides' Pattern4 into one pattern4x2 byte (black low nibble, white high).
+    static constexpr uint8_t packP4Pair(Pattern4 black, Pattern4 white)
+    {
+        return uint8_t(black) | uint8_t(white) << 4;
+    }
 
     // Per-direction bitkeys: 2 bits per cell, indexed so one line maps to a contiguous run of
     // bits. Each array is indexed by the line's fixed coordinate; the bracket shows bit order.
@@ -434,8 +441,8 @@ private:
     int     passCount[SIDE_NB];  ///< Number of passes by each side.
     Color   currentSide;         ///< The side to move.
     HashKey currentZobristKey;   ///< Zobrist key of the position (side-to-move excluded).
-    std::unique_ptr<StateInfo[]>   stateInfos;   ///< Per-ply state history, indexed by ply.
-    std::unique_ptr<UpdateCache[]> updateCache;  ///< Per-ply saved cell state for undo, by ply.
+    std::unique_ptr<StateInfo[]>   stateInfos;    ///< Per-ply state history, indexed by ply.
+    std::unique_ptr<MoveRestore[]> moveRestores;  ///< Per-ply cell restore records.
     const Direction *candidateRange;  ///< Offset table defining a move's candidate neighborhood.
     uint32_t         candidateRangeSize;  ///< Number of offsets in `candidateRange`.
     uint32_t         candAreaExpandDist;  ///< Candidate-area expansion distance per move.
@@ -462,7 +469,7 @@ private:
     Evaluation::Evaluator *evaluator_;   ///< External evaluator (may be null).
     Search::SearchThread  *thisThread_;  ///< Owning search thread (may be null).
 
-    /// Set `bits` in candidatesBB word `w`, journaling the 0->1 transitions for undo.
+    /// Set `bits` in candidatesBB word `w`, journaling its 0->1 transitions for undo.
     void setCandidateBits(int w, uint64_t bits)
     {
         uint64_t newBits = bits & ~candidatesBB.words[w];

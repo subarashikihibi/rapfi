@@ -147,10 +147,10 @@ void databaseToCSVFile(::Database::DBStorage                               &dbSt
             ss << std::quoted(dbRecord.text);
             std::string escapedText = ss.str();
             // Esacpe all '\n' with "\\n" in text
-            // (\n is used to seperate different board texts and may appear in comments)
+            // (\n is used to separate different board texts and may appear in comments)
             replaceAll(escapedText, "\n", "\\n");
             // Esacpe all '\b' with "\\b" in text
-            // (\b is used to seperate sub-sections in the text)
+            // (\b is used to separate sub-sections in the text)
             replaceAll(escapedText, "\b", "\\b");
             // Remove all '\0' in text that may exist due to bug in early implementation
             replaceAll(escapedText, std::string_view {"\0", 1}, "");
@@ -168,13 +168,15 @@ size_t mergeDatabase(DBStorage &dbDst, DBStorage &dbSrc, OverwriteRule owRule)
     DBStorage::Cursor                       cursor;
     std::vector<std::pair<DBKey, DBRecord>> dbRecords;
 
-    size_t   writeCount = 0;
-    DBRecord oldRecord;
+    size_t writeCount = 0;
     do {
         dbRecords.clear();
         cursor = dbSrc.scan(cursor, BatchSize, dbRecords);
 
         for (auto &[dbKey, dbRecord] : dbRecords) {
+            // Scoped per key so a failed lookup merges against an empty record
+            // instead of the previous key's contents.
+            DBRecord oldRecord {};
             if (!dbDst.get(dbKey, oldRecord, RECORD_MASK_ALL)
                 || checkOverwrite(oldRecord,
                                   dbRecord,

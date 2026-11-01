@@ -32,6 +32,7 @@
 #include <functional>
 #include <iomanip>
 #include <sstream>
+#include <string_view>
 
 using namespace Database;
 
@@ -171,7 +172,8 @@ void getDatabasePosition(DBCommandContext &ctx)
     // Read position sequence
     while (true) {
         std::string coordStr;
-        ctx.in >> coordStr;
+        if (!(ctx.in >> coordStr))
+            break;
         upperInplace(coordStr);
 
         if (coordStr == "DONE")
@@ -362,112 +364,65 @@ void deleteDatabaseAll(DBCommandContext &ctx, bool getPosition)
         std::string deleteType;
         ctx.in >> deleteType;
         upperInplace(deleteType);
-        if (deleteType == "NONWL")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_WIN || record.label == LABEL_LOSE
-                           ? DBClient::DelType::NoDelete
-                           : DBClient::DelType::DeleteRecursive;
-            };
-        else if (deleteType == "NONWLRECURSIVE")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_WIN || record.label == LABEL_LOSE
-                           ? DBClient::DelType::NoDeleteRecursive
-                           : DBClient::DelType::DeleteRecursive;
-            };
-        else if (deleteType == "NONWLD")
-            deleteFilter = [](DBRecord &record) {
-                return isDeterminedLabel(record.label) ? DBClient::DelType::NoDelete
-                                                       : DBClient::DelType::DeleteRecursive;
-            };
-        else if (deleteType == "NONWLDRECURSIVE")
-            deleteFilter = [](DBRecord &record) {
-                return isDeterminedLabel(record.label) ? DBClient::DelType::NoDeleteRecursive
-                                                       : DBClient::DelType::DeleteRecursive;
-            };
-        else if (deleteType == "W")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_WIN ? DBClient::DelType::DeleteRecursive
-                                                 : DBClient::DelType::NoDelete;
-            };
-        else if (deleteType == "WRECURSIVE")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_WIN ? DBClient::DelType::DeleteRecursive
-                                                 : DBClient::DelType::NoDeleteRecursive;
-            };
-        else if (deleteType == "L")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_LOSE ? DBClient::DelType::DeleteRecursive
-                                                  : DBClient::DelType::NoDelete;
-            };
-        else if (deleteType == "LRECURSIVE")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_LOSE ? DBClient::DelType::DeleteRecursive
-                                                  : DBClient::DelType::NoDeleteRecursive;
-            };
-        else if (deleteType == "WL")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_WIN || record.label == LABEL_LOSE
-                           ? DBClient::DelType::DeleteRecursive
-                           : DBClient::DelType::NoDelete;
-            };
-        else if (deleteType == "WLRECURSIVE")
-            deleteFilter = [](DBRecord &record) {
-                return record.label == LABEL_WIN || record.label == LABEL_LOSE
-                           ? DBClient::DelType::DeleteRecursive
-                           : DBClient::DelType::NoDeleteRecursive;
-            };
-        else if (deleteType == "WLD")
-            deleteFilter = [](DBRecord &record) {
-                return isDeterminedLabel(record.label) ? DBClient::DelType::DeleteRecursive
-                                                       : DBClient::DelType::NoDelete;
-            };
-        else if (deleteType == "WLDRECURSIVE")
-            deleteFilter = [](DBRecord &record) {
-                return isDeterminedLabel(record.label) ? DBClient::DelType::DeleteRecursive
-                                                       : DBClient::DelType::NoDeleteRecursive;
-            };
-        else if (deleteType == "WLNOSTEP")
-            deleteFilter = [](DBRecord &record) {
-                Value value = Value(-record.value);
-                return record.label == LABEL_WIN && value <= VALUE_MATE_IN_MAX_PLY
-                               || record.label == LABEL_LOSE && value >= VALUE_MATED_IN_MAX_PLY
-                           ? DBClient::DelType::DeleteRecursive
-                           : DBClient::DelType::NoDelete;
-            };
-        else if (deleteType == "WLNOSTEPRECURSIVE")
-            deleteFilter = [](DBRecord &record) {
-                Value value = Value(-record.value);
-                return record.label == LABEL_WIN && value <= VALUE_MATE_IN_MAX_PLY
-                               || record.label == LABEL_LOSE && value >= VALUE_MATED_IN_MAX_PLY
-                           ? DBClient::DelType::DeleteRecursive
-                           : DBClient::DelType::NoDeleteRecursive;
-            };
-        else if (deleteType == "WLINSTEP") {
-            int step;
-            ctx.in >> step;
-            deleteFilter = [step](DBRecord &record) {
-                Value value = Value(-record.value);
-                return (record.label == LABEL_WIN && value > VALUE_MATE_IN_MAX_PLY
-                        || record.label == LABEL_LOSE && value < VALUE_MATED_IN_MAX_PLY)
-                               && mate_step(value, -1) <= step
-                           ? DBClient::DelType::DeleteRecursive
-                           : DBClient::DelType::NoDelete;
-            };
+
+        // Every delete type means "delete the records matching a label predicate,
+        // keep the rest"; the RECURSIVE suffix only changes how non-matching records
+        // are kept (NoDeleteRecursive also prunes the tree walk below them).
+        bool               recursiveKeep = false;
+        std::string        baseType      = deleteType;
+        constexpr std::string_view RecursiveSuffix = "RECURSIVE";
+        if (baseType.size() > RecursiveSuffix.size()
+            && baseType.compare(baseType.size() - RecursiveSuffix.size(),
+                                RecursiveSuffix.size(),
+                                RecursiveSuffix)
+                   == 0) {
+            recursiveKeep = true;
+            baseType.resize(baseType.size() - RecursiveSuffix.size());
         }
-        else if (deleteType == "WLINSTEPRECURSIVE") {
+
+        std::function<bool(DBRecord &)> match = nullptr;
+        if (baseType == "W")
+            match = [](DBRecord &record) { return record.label == LABEL_WIN; };
+        else if (baseType == "L")
+            match = [](DBRecord &record) { return record.label == LABEL_LOSE; };
+        else if (baseType == "WL")
+            match = [](DBRecord &record) {
+                return record.label == LABEL_WIN || record.label == LABEL_LOSE;
+            };
+        else if (baseType == "WLD")
+            match = [](DBRecord &record) { return isDeterminedLabel(record.label); };
+        else if (baseType == "NONWL")
+            match = [](DBRecord &record) {
+                return !(record.label == LABEL_WIN || record.label == LABEL_LOSE);
+            };
+        else if (baseType == "NONWLD")
+            match = [](DBRecord &record) { return !isDeterminedLabel(record.label); };
+        else if (baseType == "WLNOSTEP")
+            match = [](DBRecord &record) {
+                Value value = Value(-record.value);
+                return record.label == LABEL_WIN && value <= VALUE_MATE_IN_MAX_PLY
+                       || record.label == LABEL_LOSE && value >= VALUE_MATED_IN_MAX_PLY;
+            };
+        else if (baseType == "WLINSTEP") {
             int step;
             ctx.in >> step;
-            deleteFilter = [step](DBRecord &record) {
+            match = [step](DBRecord &record) {
                 Value value = Value(-record.value);
                 return (record.label == LABEL_WIN && value > VALUE_MATE_IN_MAX_PLY
                         || record.label == LABEL_LOSE && value < VALUE_MATED_IN_MAX_PLY)
-                               && mate_step(value, -1) <= step
-                           ? DBClient::DelType::DeleteRecursive
-                           : DBClient::DelType::NoDeleteRecursive;
+                       && mate_step(value, -1) <= step;
             };
         }
         else
             ERRORL("Unknown database delete type " << deleteType);
+
+        if (match) {
+            DBClient::DelType keep =
+                recursiveKeep ? DBClient::DelType::NoDeleteRecursive : DBClient::DelType::NoDelete;
+            deleteFilter = [match = std::move(match), keep](DBRecord &record) {
+                return match(record) ? DBClient::DelType::DeleteRecursive : keep;
+            };
+        }
     }
 
     if (getPosition)
@@ -514,7 +469,7 @@ void splitDatabase(DBCommandContext &ctx)
                                                           *ctx.board,
                                                           ctx.options.rule);
             auto   endTime    = now();
-            MESSAGEL("Write " << writeCount << " records into the spilted database using "
+            MESSAGEL("Write " << writeCount << " records into the split database using "
                               << (endTime - startTime) << " ms.");
         }
     }

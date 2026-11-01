@@ -20,6 +20,7 @@
 
 #include "../config.h"
 #include "../core/iohelper.h"
+#include "../eval/scoretables.h"
 #include "../game/board.h"
 #include "searchconfig.h"
 #include "searchthread.h"
@@ -265,7 +266,17 @@ void SearchPrinter::printBestmoveWithoutSearch(SearchThread     &th,
         INFO("SPEED", 0);
         INFO("EVAL", moveValue);
         INFO("WINRATE", Evaluation::valueToWinRate(moveValue));
-        INFO("BESTLINE", MovesText {*pv, true, true, th.board->size(), Config::GeneralCfg.ioCoordMode});
+        // pv is optional; fall back to a single-move line when absent
+        if (pv)
+            INFO("BESTLINE",
+                 MovesText {*pv, true, true, th.board->size(), Config::GeneralCfg.ioCoordMode});
+        else
+            INFO("BESTLINE",
+                 MovesText {std::vector<Pos> {bestMove},
+                            true,
+                            true,
+                            th.board->size(),
+                            Config::GeneralCfg.ioCoordMode});
         INFO("PV", "DONE");
     }
 

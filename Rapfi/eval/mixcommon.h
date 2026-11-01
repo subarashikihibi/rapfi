@@ -18,15 +18,21 @@
 
 #pragma once
 
+#include "../config.h"
+#include "../core/compressor.h"
+#include "../core/iohelper.h"
 #include "../core/platform.h"
 #include "../core/types.h"
 #include "../core/utils.h"
+#include "evaluator.h"
 #include "simdops.h"
+#include "weightloader.h"
 
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <filesystem>
 #include <istream>
 #include <vector>
 
@@ -227,10 +233,10 @@ struct MixAccumulatorState
         // Clear shape table
         std::fill_n(&indexTable[0][0], 4 * boardSize * boardSize, 0);
 
-        /// Get an empty line encoding with the given boarder distance.
-        /// @param left The distance to the left boarder, in range [0, length/2].
-        /// @param right The distance to the right boarder, in range [0, length/2].
-        auto get_boarder_encoding = [=](int left, int right) -> uint32_t {
+        /// Get an empty line encoding with the given border distance.
+        /// @param left The distance to the left border, in range [0, length/2].
+        /// @param right The distance to the right border, in range [0, length/2].
+        auto get_border_encoding = [=](int left, int right) -> uint32_t {
             assert(0 <= left && left <= half);
             assert(0 <= right && right <= half);
 
@@ -275,13 +281,13 @@ struct MixAccumulatorState
                 int   disty1 = std::min(boardSize - 1 - y, half);
 
                 // DX[0]=1, DY[0]=0
-                idxs[0] = get_boarder_encoding(distx0, distx1);
+                idxs[0] = get_border_encoding(distx0, distx1);
                 // DX[1]=0, DY[1]=1
-                idxs[1] = get_boarder_encoding(disty0, disty1);
+                idxs[1] = get_border_encoding(disty0, disty1);
                 // DX[2]=1, DY[2]=-1
-                idxs[2] = get_boarder_encoding(std::min(distx0, disty1), std::min(distx1, disty0));
+                idxs[2] = get_border_encoding(std::min(distx0, disty1), std::min(distx1, disty0));
                 // DX[3]=1, DY[3]=1
-                idxs[3] = get_boarder_encoding(std::min(distx0, disty0), std::min(distx1, disty1));
+                idxs[3] = get_border_encoding(std::min(distx0, disty0), std::min(distx1, disty1));
 
                 assert(idxs[0] < ShapeNum);
                 assert(idxs[1] < ShapeNum);
@@ -329,7 +335,8 @@ inline void queueMoveCache(std::vector<MoveCache> (&moveCache)[2],
         else
             moveCache[c].pop_back();  // cancel out the last move cache
 
-        assert(moveCache[c].size() < (size_t)numCells);
+        // A cache can span undoing a full board and replaying a different continuation.
+        assert(moveCache[c].size() <= 2 * (size_t)numCells);
     }
 }
 
@@ -356,6 +363,65 @@ inline void applyMoveCache(Color                   side,
             accumulator.undo();
     }
     moveCache.clear();
+}
+
+// -------------------------------------------------
+// Weight-loading scaffolding shared by the mix evaluator constructors.
+
+/// Load the black/white weight pair of a mix-family evaluator through its weight
+/// registry, using a fresh LZ4 `Loader`. Installs the standard header validator
+/// (arch-hash, rule and board-size checks, plus one load message per file when
+/// messages are enabled) and prints the total load time afterwards. Throws on any
+/// failure; on success `weight[BLACK]` / `weight[WHITE]` hold registry-owned pointers.
+template <typename Loader, typename Registry>
+void loadWeightPair(Registry &registry,
+                    typename Registry::WeightType *(&weight)[SIDE_NB],
+                    const char           *archName,
+                    uint32_t              archHash,
+                    int                   boardSize,
+                    Rule                  rule,
+                    Numa::NumaNodeId      numaNodeId,
+                    std::filesystem::path blackWeightPath,
+                    std::filesystem::path whiteWeightPath)
+{
+    if (boardSize > MAX_BOARD_SIZE)
+        throw UnsupportedBoardSizeError(boardSize);
+
+    Loader loader(Compressor::Type::LZ4_DEFAULT);
+    Time   startTime     = now();
+    bool   printLoadInfo = false;
+    loader.setHeaderValidator([&, archName, archHash](StandardHeader header, auto &args) -> bool {
+        if (header.archHash != archHash)
+            throw IncompatibleWeightFileError("incompatible architecture in weight file.");
+
+        if (!contains(header.supportedRules, args.rule))
+            throw UnsupportedRuleError(args.rule);
+
+        if (!contains(header.supportedBoardSizes, args.boardSize))
+            throw UnsupportedBoardSizeError(args.boardSize);
+
+        if (Config::GeneralCfg.messageMode != MsgMode::NONE) {
+            MESSAGEL(archName << ": load weight from " << pathToConsoleString(args.weightPath));
+            printLoadInfo = true;
+        }
+        return true;
+    });
+
+    for (const auto &[weightSide, weightPath] : {
+             std::make_pair(BLACK, blackWeightPath),
+             std::make_pair(WHITE, whiteWeightPath),
+         }) {
+        weight[weightSide] = registry.loadWeightFromFile(loader,
+                                                         weightPath,
+                                                         numaNodeId,
+                                                         {{}, boardSize, rule, weightPath});
+        if (!weight[weightSide])
+            throw std::runtime_error("failed to load nnue weight from "
+                                     + pathToConsoleString(weightPath));
+    }
+
+    if (printLoadInfo)
+        MESSAGEL(archName << ": weight loaded in " << timeText(now() - startTime));
 }
 
 }  // namespace Evaluation::mixnet

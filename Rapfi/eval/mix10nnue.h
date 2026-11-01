@@ -54,8 +54,8 @@ public:
     void      evaluatePolicy(const Board &board, PolicyBuffer &policyBuffer, AccLevel level);
 
 private:
-    /// Clear all caches to sync accumulator state with current board state.
-    void clearCache(Color side);
+    /// Apply all queued board changes, syncing the accumulator with the board state.
+    void flushMoveCache(Color side);
     /// Record new board action, but not update accumulator instantly.
     void addCache(Color side, int x, int y, bool isUndo);
 

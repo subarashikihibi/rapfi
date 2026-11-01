@@ -29,8 +29,44 @@ template <Rule R>
 Value evaluate(const Board &board, Value alpha = -VALUE_INFINITE, Value beta = VALUE_INFINITE);
 Value evaluate(const Board &board, Rule rule);
 
+/// Rebuild rule-specific switching margins after publishing EvalCfg parameters.
+/// Scaling-factor changes refresh these tables through setScalingFactor().
+void refreshClassicalMarginTables();
+
 class ValueType;
 ValueType computeEvaluatorValue(const Board &board);
+
+struct ClassicalValueBlend
+{
+    static constexpr int Scale = 256;
+
+    enum Component {
+        CURRENT_BASIC,
+        PREVIOUS_BASIC,
+        CURRENT_THREAT,
+        COMPONENT_NB,
+    };
+};
+
+extern const int ClassicalValueBlendWeights[RULE_NB + 1][ClassicalValueBlend::COMPONENT_NB];
+
+/// Optional low-dimensional post-processing for a rule's classical value.
+/// The readout is an odd monotone piecewise-linear map over normalized value,
+/// with fixed x knots {0, 0.5, 1, 2, 4, 8}. The knots live in config.toml so
+/// the underlying model artifact remains independently reproducible.
+struct ClassicalValueReadout
+{
+    static constexpr size_t KnotCount = 6;
+
+    bool                          knotsActive = false;
+    std::array<double, KnotCount> knots {};
+};
+
+using ClassicalValueReadouts = std::array<ClassicalValueReadout, RULE_NB + 1>;
+
+/// Knots belong to TOML; binary model loading retains them and updates their scale.
+const ClassicalValueReadouts &classicalValueReadouts();
+void                          installClassicalValueReadouts(const ClassicalValueReadouts &readouts);
 
 /// EvalInfo struct contains all information needed to evaluate a position.
 struct EvalInfo

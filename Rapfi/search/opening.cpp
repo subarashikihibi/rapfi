@@ -273,13 +273,29 @@ void filterSymmetryMoves(const Board &board, std::vector<Pos> &moveList)
         }
     }
 
-    // Remove all redundant symmetry moves (which is not root in ds)
+    // Keep one member per symmetry class: the class root when it is in the
+    // move list, otherwise the first listed member. The disjoint set spans
+    // all empty cells, so the root may be absent from an already-filtered
+    // list (e.g. block moves), which must not erase the whole orbit.
+    std::unordered_map<size_t, Pos> classKeeper;
+    for (Pos move : moveList) {
+        auto it = posToIndexMap.find(move);
+        if (it == posToIndexMap.end())
+            continue;
+
+        size_t root = ds.find(it->second);
+        if (it->second == root)
+            classKeeper[root] = move;
+        else
+            classKeeper.try_emplace(root, move);
+    }
+
     auto pred = [&](Pos move) -> bool {
-        if (posToIndexMap.find(move) == posToIndexMap.end())
+        auto it = posToIndexMap.find(move);
+        if (it == posToIndexMap.end())
             return true;
 
-        size_t idx = posToIndexMap[move];
-        return ds.find(idx) != idx;
+        return classKeeper[ds.find(it->second)] != move;
     };
     moveList.erase(std::remove_if(moveList.begin(), moveList.end(), pred), moveList.end());
 }
@@ -342,8 +358,11 @@ bool OpeningGenerator::next()
         if (Config::GeneralCfg.messageMode != MsgMode::NONE)
             MESSAGEL("Searching balanced1 for opening " << board.positionString());
         if (putBalance1Move()) {
-            board.move(rule, Search::Engine.main()->rootMoves[0].pv[0]);
-            return true;
+            Pos move = Search::Engine.main()->rootMoves[0].pv[0];
+            if (!isRuleLegalMove(move))
+                return false;
+            board.move(rule, move);
+            return board.ply() == numMoves;
         }
     }
 
@@ -353,13 +372,27 @@ bool OpeningGenerator::next()
         if (Config::GeneralCfg.messageMode != MsgMode::NONE)
             MESSAGEL("Searching balanced2 for opening " << board.positionString());
         if (putBalance2Move()) {
-            board.move(rule, Search::Engine.main()->rootMoves[0].pv[0]);
-            board.move(rule, Search::Engine.main()->rootMoves[0].pv[1]);
-            return true;
+            const auto &pv = Search::Engine.main()->rootMoves[0].pv;
+            if (pv.size() < 2 || !isRuleLegalMove(pv[0]))
+                return false;
+            board.move(rule, pv[0]);
+            if (!isRuleLegalMove(pv[1])) {
+                board.undo(rule);
+                return false;
+            }
+            board.move(rule, pv[1]);
+            return board.ply() == numMoves;
         }
     }
 
     return false;
+}
+
+bool OpeningGenerator::isRuleLegalMove(Pos pos) const
+{
+    if (!board.isInBoard(pos) || !board.isEmpty(pos))
+        return false;
+    return rule != RENJU || board.sideToMove() != BLACK || !board.checkForbiddenPoint(pos);
 }
 
 /// Put random moves in the given area on board.
@@ -379,6 +412,8 @@ void OpeningGenerator::putRandomMoves(int numMoves, CandArea area)
 
     int count = 0;
     for (Pos pos : randomMoves) {
+        if (!isRuleLegalMove(pos))
+            continue;
         board.move(rule, pos);
 
         // Make sure we do not accidentally put a winning move

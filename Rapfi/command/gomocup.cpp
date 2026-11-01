@@ -61,6 +61,7 @@ std::unique_ptr<Board>        board;
 Search::SearchOptions         options;
 bool                          GUIMode   = false;
 std::atomic_bool              thinking  = false;
+std::atomic_bool              exiting   = false;
 std::optional<CandidateRange> candRange = std::nullopt;
 
 void sendActionAndUpdateBoard(ActionType action, Pos bestMove)
@@ -118,25 +119,36 @@ void think(Board                             &board,
         loadConfig();
 
     thinking = true;
-    Search::Engine.startThinking(board, options, false, [&, startTime = now()]() {
-        {
+    Search::Engine.startThinking(board, options, false, [startTime = now()]() {
+        // This callback runs on the main search thread while the protocol
+        // thread may be reading commands. Hold protocolMutex over the whole
+        // callback: `thinking` only becomes false under the lock, so once the
+        // protocol thread observes it false and acquires the lock, the shared
+        // options and board are fully settled and any ponder search has been
+        // started. This orders the ponder startup before any later stop
+        // request or board reallocation issued by a protocol command.
 #ifdef MULTI_THREADING
-            std::lock_guard<std::mutex> lock(protocolMutex);
+        std::lock_guard<std::mutex> lock(protocolMutex);
 #endif
 
-            sendActionAndUpdateBoard(Search::Engine.ctx.resultAction,
-                                     Search::Engine.ctx.bestMove);
-            thinking = false;
-        }
+        sendActionAndUpdateBoard(Search::Engine.ctx.resultAction, Search::Engine.ctx.bestMove);
+        thinking = false;
 
         // Subtract used match time
         Time usedTime = now() - startTime;
         if (options.timeLimit && options.matchTime > 0)
             options.timeLeft = std::max(options.timeLeft - usedTime, (Time)0);
 
-        // Start pondering search if needed
-        if (Search::Engine.ctx.startPonderAfterThinking)
-            Search::Engine.startThinking(board, options, true);
+        // Start pondering search if needed. The global board is re-fetched
+        // under the lock (it cannot be reallocated while we hold it), and no
+        // ponder search may start once the protocol loop is exiting, as
+        // nothing would stop it. Pondering requires a worker thread: in a
+        // single-threaded build the ponder search would run synchronously on
+        // the protocol thread and could never receive a stop command.
+#ifdef MULTI_THREADING
+        if (Search::Engine.ctx.startPonderAfterThinking && !exiting)
+            Search::Engine.startThinking(*GomocupProtocol::board, options, true);
+#endif
     });
 }
 
@@ -148,6 +160,14 @@ void setGUIMode()
     GUIMode = true;
     if (Config::GeneralCfg.messageMode == MsgMode::BRIEF)
         Config::GeneralCfg.messageMode = MsgMode::NORMAL;
+}
+
+/// Set the searcher memory limit to the given budget minus the reserved amount,
+/// flooring the result at the minimal limit of 1 KiB.
+void setSearcherMemoryLimit(size_t maxMemSizeKB, size_t memReservedKB)
+{
+    size_t memLimitKB = maxMemSizeKB <= memReservedKB ? 1 : maxMemSizeKB - memReservedKB;
+    Search::Engine.searcher()->setMemoryLimit(memLimitKB);
 }
 
 void getOption()
@@ -199,9 +219,7 @@ void getOption()
             }
         }
 
-        // minimal hash size value is 1 KB
-        size_t memLimitKB = maxMemSizeKB <= memReservedKB ? 1 : maxMemSizeKB - memReservedKB;
-        Search::Engine.searcher()->setMemoryLimit(memLimitKB);
+        setSearcherMemoryLimit(maxMemSizeKB, memReservedKB);
     }
     else if (token == "RULE") {
         std::cin >> val;
@@ -223,9 +241,8 @@ void getOption()
         if (Config::GeneralCfg.memoryReservedMB[prevRule] != Config::GeneralCfg.memoryReservedMB[options.rule.rule]) {
             size_t maxMemSizeKB = Search::Engine.searcher()->getMemoryLimit()
                                   + Config::GeneralCfg.memoryReservedMB[prevRule] * 1024;
-            size_t memReservedKB = Config::GeneralCfg.memoryReservedMB[options.rule.rule] * 1024;
-            size_t memLimitKB    = maxMemSizeKB <= memReservedKB ? 1 : maxMemSizeKB - memReservedKB;
-            Search::Engine.searcher()->setMemoryLimit(memLimitKB);
+            setSearcherMemoryLimit(maxMemSizeKB,
+                                   Config::GeneralCfg.memoryReservedMB[options.rule.rule] * 1024);
         }
 
         // Clear TT if rule is changed
@@ -233,12 +250,6 @@ void getOption()
             board->newGame(options.rule);
             Search::Engine.clear(true);
         }
-    }
-    else if (token == "GAME_TYPE") {
-        std::cin >> val;
-    }
-    else if (token == "FOLDER") {
-        std::cin >> str;
     }
     /////////////////////////////////////////////////
     // Yixin - Board Extension
@@ -263,9 +274,6 @@ void getOption()
         case 2: options.infoMode = Search::SearchOptions::INFO_DETAIL; break;
         case 3: options.infoMode = Search::SearchOptions::INFO_REALTIME_AND_DETAIL; break;
         }
-    }
-    else if (token == "TIME_INCREMENT") {
-        std::cin >> val;
     }
     else if (token == "CAUTION_FACTOR") {
         std::cin >> val;
@@ -304,21 +312,18 @@ void getOption()
             Search::Engine.setNumThreads(val);
         }
     }
-    else if (token == "THREAD_SPLIT_DEPTH") {
-        std::cin >> val;
-    }
     else if (token == "PONDERING") {
         std::cin >> val;
         options.pondering = val == 1;
     }
-    else if (token == "CHECKMATE") {
+    // Protocol-required no-ops: these Gomocup/Yixin-Board options are accepted
+    // (their value must be consumed from the stream) but deliberately ignored.
+    else if (token == "GAME_TYPE" || token == "TIME_INCREMENT" || token == "THREAD_SPLIT_DEPTH"
+             || token == "CHECKMATE" || token == "NBESTSYM" || token == "VCTHREAD") {
         std::cin >> val;
     }
-    else if (token == "NBESTSYM") {
-        std::cin >> val;
-    }
-    else if (token == "VCTHREAD") {
-        std::cin >> val;
+    else if (token == "FOLDER") {
+        std::cin >> str;  // persistent folder path, deliberately ignored
     }
     else if (token == "USEDATABASE") {
         std::cin >> val;
@@ -569,6 +574,14 @@ void getPosition(bool startThink)
         if (side == WALL)  // Currently wall is not supported
             continue;
 
+        // Cap the total number of moves: one entry may add an extra pass plus
+        // the move itself, and the per-ply board state arrays hold at most
+        // cellCount()*2 moves.
+        if (board->ply() + 2 > board->cellCount() * 2) {
+            ERRORL("Too many moves in the position.");
+            return;
+        }
+
         // Make sure current side to move correspond to the input side
         // If not, we add an extra PASS move to flip the side
         if (side == SELF && board->sideToMove() != selfColor
@@ -581,6 +594,14 @@ void getPosition(bool startThink)
 
         if (pos == Pos::PASS && checkLastMoveIsNotPass(*board))
             return;
+
+        // The read loop validated coordinates against an empty board, so
+        // duplicated coordinates can only be rejected here, against the
+        // actual position built so far.
+        if (!board->isLegal(pos)) {
+            ERRORL("Coord is not valid or empty.");
+            return;
+        }
 
         board->move(options.rule, pos);
     }
@@ -601,16 +622,23 @@ void getBlock(bool remove = false)
         std::cin >> coordStr;
         upperInplace(coordStr);
 
-        if (coordStr == "DONE")
+        if (coordStr == "DONE" || std::cin.eof())
             break;
 
+        // Reset the stream to hold only this token, so that a previous bad
+        // token can not break the parse of the following coordinates
+        ss.str(coordStr);
         ss.clear();
-        ss << coordStr;
-        ss >> x >> comma >> y;
+        if (!(ss >> x >> comma >> y)) {
+            ERRORL("Block coord is a pass or invalid.");
+            continue;
+        }
 
         Pos pos = inputCoordConvert(x, y, board->size(), Config::GeneralCfg.ioCoordMode);
-        if (!board->isInBoard(pos) || pos == Pos::PASS)
+        if (!board->isInBoard(pos) || pos == Pos::PASS) {
             ERRORL("Block coord is a pass or invalid.");
+            continue;
+        }
 
         bool alreadyInList = std::count(options.blockMoves.begin(), options.blockMoves.end(), pos);
         if (!remove) {
@@ -807,8 +835,24 @@ bool runProtocol()
 
     // clang-format off
     if (cmd == "END")                          return Search::Engine.stopThinking(), true;
-    else if (cmd == "STOP" || cmd == "YXSTOP") return Search::Engine.stopThinking(), false;
-    else if (thinking)                         return false;
+    else if (cmd == "STOP" || cmd == "YXSTOP") {
+        // Raw stop first for minimal latency mid-search. A stop that races the
+        // finish callback loses: the callback's nested ponder startThinking
+        // resets the terminate flag after us. Acquiring protocolMutex
+        // serializes behind any in-flight callback, so the second stop lands
+        // on a just-started ponder; when nothing is running it is a no-op
+        // cleared by the next startThinking.
+        Search::Engine.stopThinking();
+#ifdef MULTI_THREADING
+        std::lock_guard<std::mutex> stopLock(protocolMutex);
+        Search::Engine.stopThinking();
+#endif
+        return false;
+    }
+    // Any other command is dropped while thinking; discard the rest of its
+    // line as well, so its argument tokens are not parsed as commands later.
+    else if (thinking)
+        return std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n'), false;
 
 #ifdef MULTI_THREADING
     std::lock_guard<std::mutex> lock(protocolMutex);
@@ -899,7 +943,7 @@ extern "C" void gomocupLoopOnce()
 }
 #endif
 
-/// Warp around runProtocol(), looping until exit condition is met.
+/// Wrap around runProtocol(), looping until exit condition is met.
 /// This will only return after all searching threads have ended.
 void Command::gomocupLoop()
 {
@@ -929,6 +973,19 @@ void Command::gomocupLoop()
         // from std::cin would block so this may not necessary.
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
 #endif
+    }
+
+    // Forbid the search-finish callback from starting a new ponder search, and
+    // stop a running one (a ponder search never stops by itself), otherwise the
+    // wait below would never return. A normal search is left to finish so that
+    // its best move is still printed.
+    {
+#ifdef MULTI_THREADING
+        std::lock_guard<std::mutex> lock(protocolMutex);
+#endif
+        GomocupProtocol::exiting = true;
+        if (Search::Engine.ctx.inPonder)
+            Search::Engine.stopThinking();
     }
 
     // If there is any thread still running, wait until they exited.

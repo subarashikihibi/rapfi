@@ -18,8 +18,8 @@
 
 #include "pattern.h"
 
+#include "../core/math.h"
 #include "../eval/scoretables.h"
-#include "../core/utils.h"
 
 #include <array>
 #include <cassert>
@@ -45,7 +45,7 @@ struct Line : std::array<ColorFlag, LineLen<R>>
 {
     explicit Line() = default;
 
-    /// Decode a line from a raw 64-bit line key, classifying each cell relative to `self`.
+    /// Decode a centerless line key, classifying each cell relative to `self`.
     explicit Line(uint64_t key, Color self);
 };
 
@@ -73,9 +73,9 @@ constexpr Line<R> shiftLine(const Line<R> &line, int i);
 template <Rule R, Color Side>
 constexpr Pattern getPattern(PatternMemo<R> &patMemo, const Line<R> &line);
 
-/// Fill a (dense line code -> Pattern2x) lookup table.
+/// Fill a (dense line index -> Pattern2x) lookup table.
 template <Rule R>
-void fillPattern2xLUT(Pattern2x pattern2x[DenseKeyCnt<R>]);
+void fillPattern2xLUT(Pattern2x table[DenseKeyCnt<R>]);
 
 /// Combine four directional line patterns into the cell's `Pattern4`.
 /// @tparam Forbid Whether to flag renju forbidden points (overline / double-four / double-three).
@@ -87,11 +87,11 @@ Pattern4 getPattern4(Pattern p1, Pattern p2, Pattern p3, Pattern p4);
 /// @tparam Forbid Whether the fused Pattern4 nibble flags renju forbidden points.
 template <bool Forbid>
 void fillPatternCodeLUT(
-    PatternConfig::PCodeP4 pcode[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB]);
+    PatternConfig::PCodeP4 table[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB]);
 
-/// Fill a (dense line code + attacker -> defence-move bitmask) lookup table.
+/// Fill a (dense line index + attacker -> defence-move bitmask) lookup table.
 template <Rule R>
-void fillDefenceLUT(uint8_t defence[DenseKeyCnt<R>][2]);
+void fillDefenceLUT(uint8_t table[DenseKeyCnt<R>][2]);
 
 }  // namespace
 
@@ -105,11 +105,11 @@ static_assert(PATTERN4_NB <= (1 << (16 - PCODE_BITS)), "Pattern4 must fit in the
 alignas(64) Pattern2x PATTERN2x[DenseKeyCnt<FREESTYLE>];
 alignas(64) Pattern2x PATTERN2xStandard[DenseKeyCnt<STANDARD>];
 alignas(64) Pattern2x PATTERN2xRenju[DenseKeyCnt<RENJU>];
-alignas(64) PCodeP4   PCODE[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB];
-alignas(64) PCodeP4   PCODERenjuBlack[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB];
-alignas(64) uint8_t   DEFENCE[DenseKeyCnt<FREESTYLE>][2];
-alignas(64) uint8_t   DEFENCEStandard[DenseKeyCnt<STANDARD>][2];
-alignas(64) uint8_t   DEFENCERenju[DenseKeyCnt<RENJU>][2];
+alignas(64) PCodeP4 PCODE[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB];
+alignas(64) PCodeP4 PCODERenjuBlack[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB];
+alignas(64) uint8_t DEFENCE[DenseKeyCnt<FREESTYLE>][2];
+alignas(64) uint8_t DEFENCEStandard[DenseKeyCnt<STANDARD>][2];
+alignas(64) uint8_t DEFENCERenju[DenseKeyCnt<RENJU>][2];
 
 // Populate every lookup table before main() runs.
 [[maybe_unused]] static const bool init = []() {
@@ -304,7 +304,7 @@ constexpr Pattern getPattern(PatternMemo<R> &patMemo, const Line<R> &line)
             // itself an overline/double-four classifies as OL, which feeds no counted rung.
             Line<R> blocked   = line;
             blocked[f5Idx[0]] = OPPO;
-            p = getPattern<R, Side>(patMemo, blocked) >= B3 ? B4S : B4;
+            p                 = getPattern<R, Side>(patMemo, blocked) >= B3 ? B4S : B4;
         }
         else if (patCnt[F4] >= 2)
             p = F3S;
@@ -331,12 +331,12 @@ constexpr Pattern getPattern(PatternMemo<R> &patMemo, const Line<R> &line)
     return patMemorized = p;
 }
 
-/// Rebuild the unique valid raw half-key for a dense half code — the inverse of
+/// Rebuild the unique valid half-line key for a dense code — the inverse of
 /// PatternConfig::detail::denseHalfCode. Digit and bit order must match it exactly.
 template <int H, bool NearAtLowBits>
 uint32_t rawHalfFromDense(int code)
 {
-    // Peel off whole blocks (the block for visible run length v has 3^v codes) to find v.
+    // The block for visible run length v contains 3^v codes.
     int v = 0, blockSize = 1;
     while (code >= blockSize) {
         code -= blockSize;
@@ -346,23 +346,23 @@ uint32_t rawHalfFromDense(int code)
     assert(v <= H);
 
     static constexpr uint32_t CellBits[3] = {0b11, 0b10, 0b01};  // empty, black, white
-    uint32_t half = 0;
+    uint32_t                  half        = 0;
     for (int k = 0; k < v; k++, code /= 3)
         half |= CellBits[code % 3] << (NearAtLowBits ? 2 * k : 2 * (H - 1 - k));
     // Cells beyond the visible run stay 0b00 (wall).
     return half;
 }
 
-/// Dense index for an already-fused key (center bits removed: left half at [0, 2H), right
+/// Dense index for a fused key with the center bits removed (left half at [0, 2H), right
 /// half at [2H, 4H)). Fill-time only — runtime keys carry the center bits and go through
 /// PatternConfig::denseKey.
 template <Rule R>
-uint32_t denseFusedIndex(uint64_t fusedKey)
+uint32_t denseFusedIndex(uint64_t key)
 {
-    constexpr int      H = HalfLineLen<R>;
-    constexpr uint32_t M = (1u << (2 * H)) - 1;
-    uint32_t lo = uint32_t(fusedKey) & M;
-    uint32_t hi = uint32_t(fusedKey >> (2 * H)) & M;
+    constexpr int      H  = HalfLineLen<R>;
+    constexpr uint32_t M  = (1u << (2 * H)) - 1;
+    uint32_t           lo = uint32_t(key) & M;
+    uint32_t           hi = uint32_t(key >> (2 * H)) & M;
     if constexpr (H == 4)
         return uint32_t(PatternConfig::HALF_CODE_LO_F[lo]) + PatternConfig::HALF_CODE_HI_F[hi];
     else
@@ -370,13 +370,12 @@ uint32_t denseFusedIndex(uint64_t fusedKey)
 }
 
 template <Rule R>
-void fillPattern2xLUT(Pattern2x pattern2x[DenseKeyCnt<R>])
+void fillPattern2xLUT(Pattern2x table[DenseKeyCnt<R>])
 {
     constexpr int  H = HalfLineLen<R>;
     PatternMemo<R> memoBlack, memoWhite;
 
-    // Enumerate dense codes and rebuild each one's unique valid fused key (valid fused keys
-    // and dense codes are 1:1); Line construction and the classification DP are unchanged.
+    // Dense codes and valid center-removed keys are one-to-one.
     for (int lo = 0; lo < DenseHalfCnt<R>; lo++) {
         const uint64_t loHalf = rawHalfFromDense<H, false>(lo);
         for (int hi = 0; hi < DenseHalfCnt<R>; hi++) {
@@ -385,8 +384,8 @@ void fillPattern2xLUT(Pattern2x pattern2x[DenseKeyCnt<R>])
             assert(idx == denseFusedIndex<R>(key));
 
             Line<R> lineBlack(key, BLACK), lineWhite(key, WHITE);
-            pattern2x[idx].patBlack = getPattern<R, BLACK>(memoBlack, lineBlack);
-            pattern2x[idx].patWhite = getPattern<R, WHITE>(memoWhite, lineWhite);
+            table[idx].patBlack = getPattern<R, BLACK>(memoBlack, lineBlack);
+            table[idx].patWhite = getPattern<R, WHITE>(memoWhite, lineWhite);
         }
     }
 }
@@ -460,7 +459,7 @@ Pattern4 getPattern4(Pattern p1, Pattern p2, Pattern p3, Pattern p4)
 
 template <bool Forbid>
 void fillPatternCodeLUT(
-    PatternConfig::PCodeP4 pcode[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB])
+    PatternConfig::PCodeP4 table[PATTERN_NB][PATTERN_NB][PATTERN_NB][PATTERN_NB])
 {
     constexpr int N = PATTERN_NB;
 
@@ -479,10 +478,8 @@ void fillPatternCodeLUT(
             std::swap(b, c);
     };
 
-    // Pass 1: hand each non-decreasing 4-tuple a dense code in lexicographic order, fused with
-    // the tuple's aggregate Pattern4 in the high bits. The code order is exactly the order in
-    // which canonical representatives first appear when scanning all N^4 tuples by linear index,
-    // so the pcode mapping is identical to the historical O(N^8) construction.
+    // Pass 1: assign each non-decreasing 4-tuple a dense code in lexicographic order and fuse its
+    // aggregate Pattern4 into the high bits. This order preserves the established pcode mapping.
     PatternCode code = 0;
     for (int a = 0; a < N; a++)
         for (int b = a; b < N; b++)
@@ -490,7 +487,7 @@ void fillPatternCodeLUT(
                 for (int d = c; d < N; d++) {
                     Pattern4 p4 =
                         getPattern4<Forbid>((Pattern)a, (Pattern)b, (Pattern)c, (Pattern)d);
-                    pcode[a][b][c][d].raw =
+                    table[a][b][c][d].raw =
                         uint16_t(code++ | uint16_t(p4) << PatternConfig::PCODE_BITS);
                 }
 
@@ -504,23 +501,15 @@ void fillPatternCodeLUT(
                 for (int n = 0; n < N; n++) {
                     int a = i, b = j, c = m, d = n;
                     sort4(a, b, c, d);
-                    pcode[i][j][m][n] = pcode[a][b][c][d];
+                    table[i][j][m][n] = table[a][b][c][d];
                 }
 }
 
 template <Rule R>
-void fillDefenceLUT(uint8_t defence[DenseKeyCnt<R>][2])
+void fillDefenceLUT(uint8_t table[DenseKeyCnt<R>][2])
 {
-    constexpr int H = HalfLineLen<R>;
-
-    const auto lookupPattern2x = [](uint32_t idx) -> Pattern2x {
-        if constexpr (R == Rule::FREESTYLE)
-            return PatternConfig::PATTERN2x[idx];
-        else if constexpr (R == Rule::STANDARD)
-            return PatternConfig::PATTERN2xStandard[idx];
-        else if constexpr (R == Rule::RENJU)
-            return PatternConfig::PATTERN2xRenju[idx];
-    };
+    constexpr int H          = HalfLineLen<R>;
+    const auto   &pattern2xs = PatternConfig::pattern2xTable<R>();
 
     for (int lo = 0; lo < DenseHalfCnt<R>; lo++) {
         const uint64_t loHalf = rawHalfFromDense<H, false>(lo);
@@ -532,18 +521,17 @@ void fillDefenceLUT(uint8_t defence[DenseKeyCnt<R>][2])
                 uint32_t defenceMask = 0;
 
                 // Check if the defender needs to make any defence (attacker has moves above three)
-                if (Pattern attackPattern = lookupPattern2x(idx)[attacker]; attackPattern >= F3) {
+                if (Pattern attackPattern = pattern2xs[idx][attacker]; attackPattern >= F3) {
                     // For each empty cell, we place a defender stone and see if the attacker
                     // can not impose any threat now. If so, we regard this move as a defence
-                    // move. (The pre-dense code probed with a WALL here; a defender stone
-                    // reads identically from the attacker's perspective and keeps the probed
-                    // key inside the dense space.)
+                    // move. A defender stone reads like a wall from the attacker's perspective
+                    // while keeping the probe representable by the dense encoding.
                     for (int i = 0; i < 2 * H; i++) {
                         const uint64_t cellMask = uint64_t(0b11) << (2 * i);
                         if ((key & cellMask) != cellMask)
                             continue;  // not an empty cell
                         const uint64_t probeKey = key ^ (uint64_t(0x1 + ~attacker) << (2 * i));
-                        if (lookupPattern2x(denseFusedIndex<R>(probeKey))[attacker] < F3)
+                        if (pattern2xs[denseFusedIndex<R>(probeKey)][attacker] < F3)
                             defenceMask |= 1 << i;
                     }
 
@@ -552,7 +540,7 @@ void fillDefenceLUT(uint8_t defence[DenseKeyCnt<R>][2])
                     defenceMask = (defenceMask >> (H - 4)) & 0xff;
                 }
 
-                defence[idx][attacker] = defenceMask;
+                table[idx][attacker] = defenceMask;
             }
         }
     }

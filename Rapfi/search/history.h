@@ -56,7 +56,7 @@ namespace detail {
 template <class T, size_t... Sizes>
 using MDNativeArray = typename detail::MultiDimNativeArray<T, Sizes...>::type;
 
-/// HistTable is a handy multi-demensional array to store history statistics.
+/// HistTable is a handy multi-dimensional array to store history statistics.
 /// @tparam ValueT The base value type of the array
 /// @tparam Range The range [-Range, Range] of the value
 /// @tparam Shape The size list of multiple dimensions, at least have one.
@@ -110,5 +110,18 @@ typedef HistTable<int16_t, 10692, SIDE_NB, FULL_BOARD_CELL_COUNT, MAIN_HIST_TYPE
 /// CounterMoveHistory records a natural response of moves irrespective of the actual position.
 /// It is indexed by color of the previous move, previous move's position and current move's type.
 typedef HistTable<std::pair<Pos, Pattern4>, 0, SIDE_NB, MAX_MOVES> CounterMoveHistory;
+
+/// Optional dynamic move-ordering information supplied by a searcher to the shared MovePicker.
+/// Alpha-beta owns and populates these tables; other searchers leave this view empty.
+struct MoveHistoryScoring
+{
+    static constexpr int WeightScale = 256 * 256;
+
+    const MainHistory        *mainHistory        = nullptr;
+    const CounterMoveHistory *counterMoveHistory = nullptr;
+    int                       attackWeight       = 0;
+    int                       quietWeight        = 0;
+    int                       counterMoveBonus   = 0;
+};
 
 }  // namespace Search

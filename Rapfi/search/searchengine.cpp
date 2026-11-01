@@ -32,6 +32,9 @@
 #include "opening.h"
 #include "searcher.h"
 #include "searchthread.h"
+#ifdef POLICY_TRAINING
+    #include "../tuning/policytrace.h"
+#endif
 
 #include <algorithm>
 #include <unordered_set>
@@ -343,7 +346,21 @@ void SearchEngine::startThinking(const Board          &board,
 
     // Start the main search thread
     main()->runTask([this, onStop = std::move(onStop)](SearchThread &th) {
+#ifdef POLICY_TRAINING
+        if (!policyTraceSessionPtr)
+            runSearch(th);
+        else {
+            try {
+                runSearch(th);
+            }
+            catch (...) {
+                policyTraceSessionPtr->captureFailure(std::current_exception());
+                terminate.store(true, std::memory_order_relaxed);
+            }
+        }
+#else
         runSearch(th);
+#endif
         if (onStop)  // If onStop is set, queue a tail task to call it
             main()->runTask([onStop = std::move(onStop)](SearchThread &th) { onStop(); });
     });
@@ -380,10 +397,12 @@ bool SearchEngine::tryTrivialBestmove(SearchThread &main)
 
         return true;  // abnormal case: GUI might have a bug
     }
-    // If we are winning, return directly
-    else if (main.board->p4Count(main.board->sideToMove(), A_FIVE)) {
-        assert(main.board->pattern4(main.rootMoves[0].pv[0], main.board->sideToMove())
-               == A_FIVE);
+    // If we are winning, return directly. The winning square can be absent
+    // from the root move list (e.g. filtered by blockMoves), in which case
+    // rootMoves[0] is an arbitrary candidate and the normal search must run.
+    else if (main.board->p4Count(main.board->sideToMove(), A_FIVE)
+             && main.board->pattern4(main.rootMoves[0].pv[0], main.board->sideToMove())
+                    == A_FIVE) {
         main.rootMoves[0].value = mate_in(1);
         ctx.bestMove            = main.rootMoves[0].pv[0];
 
@@ -438,6 +457,11 @@ void SearchEngine::clear(bool clearAllMemory)
 {
     if (threads_.empty())
         setNumThreads(Config::GeneralCfg.defaultThreadNum);
+
+    // A stop request only sets the terminate flag; threads drain their
+    // current search asynchronously. Wait for them to go idle before the
+    // searcher mutates state they still read (TT, reduction tables).
+    waitForIdle();
 
     if (searcher())
         searcher()->clear(*this, clearAllMemory);

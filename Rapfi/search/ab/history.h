@@ -27,8 +27,13 @@ namespace Search::AB {
 struct ABSearchData;  // forward declaration
 struct SearchStack;   // forward declaration
 
+MoveHistoryScoring makeMoveHistoryScoring(Rule                      rule,
+                                          Color                     sideToMove,
+                                          const MainHistory        &mainHistory,
+                                          const CounterMoveHistory &counterMoveHistory);
+
 /// HistoryTracker is used to record all information needed to update
-/// move heruistics in one search ply in ABSearch.
+/// move heuristics in one search ply in ABSearch.
 struct HistoryTracker
 {
     static constexpr int MAX_ATTACKS = 48;
@@ -40,7 +45,7 @@ struct HistoryTracker
         , searchStack(ss)
     {}
 
-    /// Add a searched move to heruistic records.
+    /// Add a searched move to heuristic records.
     void addSearchedMove(Pos move, Pos currentBestMove);
 
     /// Update move sorting heuristics when a best move is found.

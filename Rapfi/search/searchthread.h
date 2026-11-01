@@ -51,7 +51,11 @@ class SearchThread
 private:
     friend class SearchEngine;
     Numa::NumaNodeId numaId;
-    bool             running, exit;
+    // Atomic: waitForIdle() reads `running` and ~SearchThread writes `exit`
+    // without holding the mutex. All wakeup-relevant writes stay under the
+    // mutex and are paired with a notify, so the cv predicates cannot miss
+    // a transition.
+    std::atomic<bool> running, exit;
 
 #ifdef MULTI_THREADING
     std::function<void(SearchThread &)> taskFunc;
@@ -69,12 +73,12 @@ public:
     explicit SearchThread(SearchEngine &searchEngine, uint32_t id);
     /// Start the thread loop. This should be called once after the thread is created.
     void init(bool bindGroup);
-    /// Destory this search thread. Search must be stopped before entering.
-    virtual ~SearchThread();
+    /// Destroy this search thread. Search must be stopped before entering.
+    ~SearchThread();
     /// Clear the thread state between two search.
-    virtual void clear();
+    void clear();
     /// Setup the board instance in this thread, and update the evaluator.
-    virtual void setBoardAndEvaluator(const Board &board);
+    void setBoardAndEvaluator(const Board &board);
     /// Return if this thread is the main thread.
     bool isMainThread() const { return id == 0; }
     /// Launch a custom task in this thread.

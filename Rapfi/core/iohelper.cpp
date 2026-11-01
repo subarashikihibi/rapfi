@@ -57,26 +57,30 @@ constexpr int PASS_COORD_Y = -1;
 
 }  // namespace
 
-Pos inputCoordConvert(int x, int y, int boardsize, CoordConvertionMode mode)
+Pos inputCoordConvert(int x, int y, int boardsize, CoordConversionMode mode)
 {
     if (x == PASS_COORD_X && y == PASS_COORD_Y)
         return Pos::PASS;
 
+    // Validate before packing: oversized coordinates can wrap into another valid cell.
+    if (x < 0 || x >= boardsize || y < 0 || y >= boardsize)
+        return Pos::NONE;
+
     switch (mode) {
-    case CoordConvertionMode::FLIPY_X: return {y, boardsize - 1 - x};
-    case CoordConvertionMode::X_FLIPY: return {x, boardsize - 1 - y};
+    case CoordConversionMode::FLIPY_X: return {y, boardsize - 1 - x};
+    case CoordConversionMode::X_FLIPY: return {x, boardsize - 1 - y};
     default: return {x, y};
     }
 }
 
-std::pair<int, int> outputCoordConvert(Pos pos, int boardsize, CoordConvertionMode mode)
+std::pair<int, int> outputCoordConvert(Pos pos, int boardsize, CoordConversionMode mode)
 {
     if (pos == Pos::PASS)
         return {PASS_COORD_X, PASS_COORD_Y};
 
     switch (mode) {
-    case CoordConvertionMode::FLIPY_X: return {boardsize - 1 - pos.y(), pos.x()};
-    case CoordConvertionMode::X_FLIPY: return {pos.x(), boardsize - 1 - pos.y()};
+    case CoordConversionMode::FLIPY_X: return {boardsize - 1 - pos.y(), pos.x()};
+    case CoordConversionMode::X_FLIPY: return {pos.x(), boardsize - 1 - pos.y()};
     default: return {pos.x(), pos.y()};
     }
 }

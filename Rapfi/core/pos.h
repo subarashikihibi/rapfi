@@ -19,6 +19,7 @@
 #pragma once
 
 #include <array>
+#include <cassert>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -49,7 +50,13 @@ constexpr int MAX_MOVES             = MAX_BOARD_SIZE * MAX_BOARD_SIZE + 1;  ///<
 struct Pos
 {
     Pos() = default;
-    constexpr Pos(int x, int y) : _pos(((y + BOARD_BOUNDARY) << 5) | (x + BOARD_BOUNDARY)) {}
+    constexpr Pos(int x, int y) : _pos(0)
+    {
+        // Coordinates must fit the padded address space before they are packed.
+        assert(-BOARD_BOUNDARY <= x && x < FULL_BOARD_SIZE - BOARD_BOUNDARY);
+        assert(-BOARD_BOUNDARY <= y && y < FULL_BOARD_SIZE - BOARD_BOUNDARY);
+        _pos = ((y + BOARD_BOUNDARY) << 5) | (x + BOARD_BOUNDARY);
+    }
     constexpr explicit Pos(int16_t pos) : _pos(pos) {}
 
     constexpr int x() const { return (_pos & 31) - BOARD_BOUNDARY; }
@@ -267,7 +274,7 @@ constexpr Pos applyTransform(Pos pos, int sizeX, int sizeY, TransformType trans)
 /// engine can match different GUIs' coordinate orientations. The active mode is held by the
 /// configuration layer (`Config::GeneralCfg.ioCoordMode`) and passed explicitly to the conversion
 /// helpers in iohelper.h.
-enum class CoordConvertionMode {
+enum class CoordConversionMode {
     NONE,     ///< No remapping.
     X_FLIPY,  ///< Keep x, flip y.
     FLIPY_X,  ///< Swap and flip: (x, y) <-> (flipped y, x).

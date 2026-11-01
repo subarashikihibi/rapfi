@@ -19,11 +19,16 @@
 #pragma once
 
 #include "dataentry.h"
+#include "dataformat.h"
 
+#include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <string>
 
 namespace Tuning {
+
+class MultiFileInputStream;  // forward declaration (datastream.h)
 
 /// Dataset class is the base class for a sequential iterable-style dataset.
 class Dataset
@@ -38,8 +43,29 @@ public:
     /// This function is not thread-safe.
     virtual bool next(DataEntry *entry) = 0;
 
+    /// Whether this dataset stores whole games and supports iterating them via nextGame().
+    /// Game iteration is both lossless (game boundaries need no reconstruction from entry
+    /// chains) and faster (no per-entry position expansion), so consumers that can handle
+    /// games should prefer it when available.
+    virtual bool supportsGames() const { return false; }
+
+    /// Reads one complete game into the caller's (reused) GameEntry. Only meaningful when
+    /// supportsGames() is true; the default implementation reports end-of-data. Do not
+    /// interleave with next() on the same pass - both advance the same underlying stream.
+    /// @return False if there is no more game to read, otherwise true.
+    virtual bool nextGame(GameEntry *game) { return false; }
+
     /// Reset the read cursor to the beginning of the dataset.
     virtual void reset() = 0;
+
+    /// Sets a checked upper bound for the retained allocation envelope of one
+    /// decoded record. Readers without variable-size whole-game records may
+    /// ignore it. The default is unlimited.
+    virtual void setMaxRecordBytes(size_t) {}
+
+    /// Controls whether optional extra-PV payloads are materialized. Consumers
+    /// that only use the played move can disable them before reading games.
+    virtual void setRetainExtraPVs(bool) {}
 };
 
 /// SimpleBinaryDataset implements Dataset for binary format (.bin) in c-gomoku-cli.
@@ -53,23 +79,24 @@ public:
 ///     uint16_t result : 2;     // game outcome: 0=loss, 1=draw, 2=win (side to move pov)
 ///     uint16_t ply : 9;        // current number of stones on board
 ///     uint16_t boardsize : 5;  // board size in [5-22]
-///     uint16_t rule : 3;       // game rule: 0=freestyle, 1=standard, 4=renju
+///     uint16_t rule : 3;       // gomocup rule number: 0=freestyle, 1=standard, 4=renju
 ///     uint16_t move : 13;      // move output by the engine
 ///     uint16_t position[ply];  // move sequence that representing a position
 /// };
 class SimpleBinaryDataset : public Dataset
 {
 public:
-    // Throws expcetion when an error occured when reading the file
+    // Throws exception when an error occurred when reading the file
     SimpleBinaryDataset(const std::vector<std::string> &filenames);
+    SimpleBinaryDataset(const std::vector<std::filesystem::path> &filenames);
     ~SimpleBinaryDataset();
 
     bool next(DataEntry *entry) override;
     void reset() override;
 
 private:
-    class DataSource;
-    std::unique_ptr<DataSource> dataSource;
+    std::unique_ptr<MultiFileInputStream> dataStream;
+    BinDecodeScratch                      scratch;
 };
 
 /// PackedBinaryDataset implements Dataset for packed binary format (.binpack) in c-gomoku-cli.
@@ -87,7 +114,7 @@ private:
 ///
 /// struct Entry {
 ///   uint32_t boardSize : 5;     // board size in [5-22]
-///   uint32_t rule : 3;          // game rule: 0=freestyle, 1=standard, 4=renju
+///   uint32_t rule : 3;          // gomocup rule number: 0=freestyle, 1=standard, 4=renju
 ///   uint32_t result : 4;        // game outcome: 0=loss, 1=draw, 2=win (first player pov)
 ///   uint32_t totalPly : 10;     // total number of stones on board after game ended
 ///   uint32_t initPly : 10;      // initial number of stones on board when game started
@@ -99,7 +126,7 @@ private:
 ///       uint16_t isFirst : 1;   // is this move the first in multipv?
 ///       uint16_t isLast : 1;    // is this move the last in multipv?
 ///       uint16_t isNoEval : 1;  // does this move contain no eval info?
-///       uint16_t isPass : 1;    // is this move a pass move (side not changed after this move)?
+///       uint16_t isPass : 1;    // is this a pass (yields the turn, places no stone)?
 ///       uint16_t reserved : 2;  // reserved for future use
 ///       uint16_t move : 10;     // move output from engine
 ///       int16_t  eval;          // eval output from engine
@@ -109,12 +136,17 @@ class PackedBinaryDataset : public Dataset
 {
 public:
     /// Creates a packed binary dataset from a list of filenames.
-    /// @note Throws expcetion when an error occured when reading the file.
+    /// @note Throws exception when an error occurred when reading the file.
     PackedBinaryDataset(const std::vector<std::string> &filenames);
+    PackedBinaryDataset(const std::vector<std::filesystem::path> &filenames);
     ~PackedBinaryDataset();
 
     bool next(DataEntry *entry) override;
+    bool supportsGames() const override { return true; }
+    bool nextGame(GameEntry *game) override;
     void reset() override;
+    void setMaxRecordBytes(size_t bytes) override;
+    void setRetainExtraPVs(bool retain) override;
 
 private:
     class DataSource;
@@ -145,7 +177,7 @@ class KatagoNumpyDataset : public Dataset
 {
 public:
     /// Construct a katago numpy dataset from a list of npz file names.
-    /// Rule is needed since rule infomation is not recorded in npz files.
+    /// Rule is needed since rule information is not recorded in npz files.
     KatagoNumpyDataset(const std::vector<std::string> &filenames, Rule rule);
     ~KatagoNumpyDataset();
 

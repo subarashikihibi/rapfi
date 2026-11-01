@@ -19,6 +19,7 @@
 #pragma once
 
 #include "dataentry.h"
+#include "featureencoder.h"
 
 #include <functional>
 #include <memory>
@@ -44,6 +45,11 @@ public:
     /// multiple data entries for writing (which is the default behaviour for base class).
     virtual void writeGame(const GameEntry &gameEntry);
 
+    /// Flushes any buffered data and completes outstanding write jobs, throwing on
+    /// failure. Callers that need write errors to reach their exit code must call
+    /// this before destruction: a destructor can only log, never propagate.
+    virtual void flush() {}
+
     /// Decomposed a game entry into multiple data entries for writing.
     /// Filter can be used to filter out part of data entries.
     void writeEntriesInGame(const GameEntry                       &gameEntry,
@@ -68,7 +74,7 @@ private:
 ///     uint16_t result : 2;     // game outcome: 0=loss, 1=draw, 2=win (side to move pov)
 ///     uint16_t ply : 9;        // current number of stones on board
 ///     uint16_t boardsize : 5;  // board size in [5-22]
-///     uint16_t rule : 3;       // game rule: 0=freestyle, 1=standard, 4=renju
+///     uint16_t rule : 3;       // gomocup rule number: 0=freestyle, 1=standard, 4=renju
 ///     uint16_t move : 13;      // move output by the engine
 ///     uint16_t position[ply];  // move sequence that representing a position
 /// };
@@ -100,7 +106,7 @@ private:
 ///
 /// struct Entry {
 ///   uint32_t boardSize : 5;     // board size in [5-22]
-///   uint32_t rule : 3;          // game rule: 0=freestyle, 1=standard, 4=renju
+///   uint32_t rule : 3;          // gomocup rule number: 0=freestyle, 1=standard, 4=renju
 ///   uint32_t result : 4;        // game outcome: 0=loss, 1=draw, 2=win (first player pov)
 ///   uint32_t totalPly : 10;     // total number of stones on board after game ended
 ///   uint32_t initPly : 10;      // initial number of stones on board when game started
@@ -112,7 +118,7 @@ private:
 ///       uint16_t isFirst : 1;   // is this move the first in multipv?
 ///       uint16_t isLast : 1;    // is this move the last in multipv?
 ///       uint16_t isNoEval : 1;  // does this move contain no eval info?
-///       uint16_t isPass : 1;    // is this move a pass move (side not changed after this move)?
+///       uint16_t isPass : 1;    // is this a pass (yields the turn, places no stone)?
 ///       uint16_t reserved : 2;  // reserved for future use
 ///       uint16_t move : 10;     // move output from engine
 ///       int16_t  eval;          // eval output from engine
@@ -167,7 +173,7 @@ private:
 class NumpyDataWriter : public DataWriter
 {
 public:
-    /// Constructs a numpy data writer.
+    /// Constructs a numpy data writer with the default one-hot policy fallback.
     /// @param dirpath The directory of output npz files
     /// @param maxNumEntriesPerFile The maximum number of entries per file
     /// @param flushCallback Optional callback, called with name of file wrote when flush
@@ -176,9 +182,23 @@ public:
                     size_t                           maxNumEntriesPerFile,
                     std::function<void(std::string)> flushCallback     = nullptr,
                     bool                             writeSparseInputs = true);
+    /// Constructs a numpy data writer with explicit policy-target conversion settings.
+    /// @param policyConfig Policy-target conversion settings
+    NumpyDataWriter(std::string                      dirpath,
+                    size_t                           maxNumEntriesPerFile,
+                    PolicyTargetConfig               policyConfig,
+                    std::function<void(std::string)> flushCallback     = nullptr,
+                    bool                             writeSparseInputs = true);
     ~NumpyDataWriter();
 
-    void writeEntry(const DataEntry &entry);
+    void writeEntry(const DataEntry &entry) override;
+    /// Buffers a whole game and extracts the per-entry features with one
+    /// incrementally-updated board per game (one move() per entry) at flush,
+    /// instead of replaying every entry's position from an empty board.
+    void writeGame(const GameEntry &gameEntry) override;
+    /// Schedules the remaining buffered batch and joins every pending save
+    /// job, rethrowing the first failure.
+    void flush() override;
     void writeEntryWithSoftValueTarget(const DataEntry &entry,
                                        float            winprob,
                                        float            loseprob,

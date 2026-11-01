@@ -23,17 +23,44 @@
 #include "searcher.h"
 #include "searchstack.h"
 
+#include <limits>
+
 namespace {
 
 /// History and stats update bonus, based on depth
-constexpr int statBonus(Depth d)
+constexpr int statBonus(Rule rule, Depth d)
 {
-    return std::min(static_cast<int>(25 * d * d + 105 * d - 157), 8927);
+    constexpr int StatBonusQuadratic[RULE_NB] = {29, 24, 23};
+    return std::min(static_cast<int>(StatBonusQuadratic[rule] * d * d + 99 * d - 164), 8927);
 }
+
+constexpr int MainHistoryAttackWeight[RULE_NB + 1] = {492, 531, 511, 520};
+constexpr int MainHistoryQuietWeight[RULE_NB + 1]  = {265, 270, 270, 268};
+constexpr int CounterMoveBonus[RULE_NB + 1]        = {38, 33, 31, 33};
+
+constexpr int historyTableIndex(Rule rule, Color sideToMove)
+{
+    return int(rule) + (rule == RENJU ? int(sideToMove) : 0);
+}
+
+static_assert(std::numeric_limits<int>::max() >= 1LL * 10692 * 2048);
 
 }  // namespace
 
 namespace Search::AB {
+
+MoveHistoryScoring makeMoveHistoryScoring(Rule                      rule,
+                                          Color                     sideToMove,
+                                          const MainHistory        &mainHistory,
+                                          const CounterMoveHistory &counterMoveHistory)
+{
+    int table = historyTableIndex(rule, sideToMove);
+    return {&mainHistory,
+            &counterMoveHistory,
+            MainHistoryAttackWeight[table],
+            MainHistoryQuietWeight[table],
+            CounterMoveBonus[table]};
+}
 
 void HistoryTracker::addSearchedMove(Pos move, Pos currentBestMove)
 {
@@ -55,7 +82,7 @@ void HistoryTracker::updateBestmoveStats(Depth depth, Pos bestMove, Value bestVa
     bool     oppo5  = board.p4Count(oppo, A_FIVE);
     bool     oppo4  = oppo5 || board.p4Count(oppo, B_FLEX4);
     Pattern4 selfP4 = board.pattern4(bestMove, self);
-    int      bonus  = statBonus(depth);
+    int      bonus  = statBonus(board.thisThread()->options().rule, depth);
 
     if (selfP4 >= H_FLEX3) {
         searchData->mainHistory[self][bestMove][HIST_ATTACK] << bonus;
@@ -82,15 +109,17 @@ void HistoryTracker::updateBestmoveStats(Depth depth, Pos bestMove, Value bestVa
 
 void HistoryTracker::updateTTMoveStats(Depth depth, Pos ttMove, Value ttValue, Value beta)
 {
-    // Validate ttMove first
-    if (!board.isLegal(ttMove))
+    // Validate ttMove first. A TT probe can decode Pos::PASS from an aliased
+    // empty entry; isLegal accepts PASS as passable, but it addresses no
+    // board cell and has no history slot.
+    if (ttMove == Pos::PASS || !board.isLegal(ttMove))
         return;
 
     Color    self = board.sideToMove(), oppo = ~self;
     bool     oppo5  = board.p4Count(oppo, A_FIVE);
     bool     oppo4  = oppo5 || board.p4Count(oppo, B_FLEX4);
     Pattern4 selfP4 = board.pattern4(ttMove, self);
-    int      bonus  = statBonus(depth);
+    int      bonus  = statBonus(board.thisThread()->options().rule, depth);
 
     if (!oppo4 && selfP4 < H_FLEX3) {
         // Bonus for a quiet ttMove that fails high
@@ -107,7 +136,7 @@ void HistoryTracker::updateQuietStats(Pos move, int bonus)
     Color self = board.sideToMove();
 
     searchData->mainHistory[self][move][HIST_QUIET] << bonus;
-    searchStack->setKiller(move);  // Update killer heruistic move
+    searchStack->setKiller(move);  // Update killer heuristic move
 }
 
 }  // namespace Search::AB

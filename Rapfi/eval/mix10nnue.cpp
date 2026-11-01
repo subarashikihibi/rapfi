@@ -18,7 +18,6 @@
 
 #include "mix10nnue.h"
 
-#include "../config.h"
 #include "mixcommon.h"
 
 #include "../core/compressor.h"
@@ -452,10 +451,11 @@ void Accumulator::move(const Weight &w, Color pieceColor, int x, int y)
     for (int i = 0; i < changeCount; i++) {
         const OnePointChange &c = changeTable[i];
         if (i + 1 < changeCount) {
+            const OnePointChange &cnext = changeTable[i + 1];
             multiPrefetch<FeatureDim * sizeof(int16_t)>(
-                w.mapping[c.mappingIdx][changeTable[i + 1].oldShape]);
+                w.mapping[cnext.mappingIdx][cnext.oldShape]);
             multiPrefetch<FeatureDim * sizeof(int16_t)>(
-                w.mapping[c.mappingIdx][changeTable[i + 1].newShape]);
+                w.mapping[cnext.mappingIdx][cnext.newShape]);
         }
 
         // Update mapSum
@@ -885,48 +885,17 @@ Evaluator::Evaluator(int                   boardSize,
     : Evaluation::Evaluator(boardSize, rule)
     , weight {nullptr, nullptr}
 {
-    CompressedWrapper<StandardHeaderLoader<Mix10WeightLoader>> loader(
-        Compressor::Type::LZ4_DEFAULT);
-
-    if (boardSize > 22)
-        throw UnsupportedBoardSizeError(boardSize);
-
-    Time startTime     = now();
-    bool printLoadInfo = false;
-    loader.setHeaderValidator([&](StandardHeader header, auto &args) -> bool {
-        constexpr uint32_t ArchHash =
-            ArchHashBase ^ (((ValueDim / 8) << 16) | ((FeatDWConvDim / 8) << 8) | (FeatureDim / 8));
-        if (header.archHash != ArchHash)
-            throw IncompatibleWeightFileError("incompatible architecture in weight file.");
-
-        if (!contains(header.supportedRules, args.rule))
-            throw UnsupportedRuleError(args.rule);
-
-        if (!contains(header.supportedBoardSizes, args.boardSize))
-            throw UnsupportedBoardSizeError(args.boardSize);
-
-        if (Config::GeneralCfg.messageMode != MsgMode::NONE) {
-            MESSAGEL("mix10 nnue: load weight from " << pathToConsoleString(args.weightPath));
-            printLoadInfo = true;
-        }
-        return true;
-    });
-
-    for (const auto &[weightSide, weightPath] : {
-             std::make_pair(BLACK, blackWeightPath),
-             std::make_pair(WHITE, whiteWeightPath),
-         }) {
-        weight[weightSide] = WeightReg.loadWeightFromFile(loader,
-                                                          weightPath,
-                                                          numaNodeId,
-                                                          {{}, boardSize, rule, weightPath});
-        if (!weight[weightSide])
-            throw std::runtime_error("failed to load nnue weight from "
-                                     + pathToConsoleString(weightPath));
-    }
-
-    if (printLoadInfo)
-        MESSAGEL("mix10 nnue: weight loaded in " << timeText(now() - startTime));
+    constexpr uint32_t ArchHash =
+        ArchHashBase ^ (((ValueDim / 8) << 16) | ((FeatDWConvDim / 8) << 8) | (FeatureDim / 8));
+    loadWeightPair<CompressedWrapper<StandardHeaderLoader<Mix10WeightLoader>>>(WeightReg,
+                                                                               weight,
+                                                                               "mix10 nnue",
+                                                                               ArchHash,
+                                                                               boardSize,
+                                                                               rule,
+                                                                               numaNodeId,
+                                                                               blackWeightPath,
+                                                                               whiteWeightPath);
 
     accumulator[BLACK] = std::make_unique<Accumulator>(boardSize);
     accumulator[WHITE] = std::make_unique<Accumulator>(boardSize);
@@ -967,7 +936,7 @@ ValueType Evaluator::evaluateValue(const Board &board, AccLevel level)
     Color self = board.sideToMove();
 
     // Apply all incremental update for both sides and calculate value
-    clearCache(self);
+    flushMoveCache(self);
     auto [win, loss, draw, _] = accumulator[self]->evaluateValueLarge(*weight[self]);
 
     return ValueType(win, loss, draw, true);
@@ -978,11 +947,11 @@ void Evaluator::evaluatePolicy(const Board &board, PolicyBuffer &policyBuffer, A
     Color self = board.sideToMove();
 
     // Apply all incremental update and calculate policy
-    clearCache(self);
+    flushMoveCache(self);
     accumulator[self]->evaluatePolicyLarge(*weight[self], policyBuffer);
 }
 
-void Evaluator::clearCache(Color side)
+void Evaluator::flushMoveCache(Color side)
 {
     applyMoveCache(side, moveCache[side], *accumulator[side], *weight[side]);
 }
